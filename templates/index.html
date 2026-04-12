@@ -1,0 +1,208 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block subtitle %}Production overview{% endblock %}
+
+{% block content %}
+<!-- PRIMARY KPIs -->
+<div class="kpi-grid">
+    <div class="kpi-card">
+        <div class="kpi-header">
+            <span class="kpi-label">Total Planned</span>
+        </div>
+        <div class="kpi-value">{{ "{:,}".format(total_planned) }}</div>
+        <div class="kpi-footer">
+            <span class="kpi-tag neutral">units</span>
+        </div>
+    </div>
+    <div class="kpi-card">
+        <div class="kpi-header">
+            <span class="kpi-label">Total Actual</span>
+        </div>
+        <div class="kpi-value">{{ "{:,}".format(total_actual) }}</div>
+        <div class="kpi-footer">
+            {% set gap = total_actual - total_planned %}
+            <span class="kpi-tag {{ 'positive' if gap >= 0 else 'negative' }}">
+                {{ '+' if gap > 0 }}{{ "{:,}".format(gap) }} gap
+            </span>
+        </div>
+    </div>
+    <div class="kpi-card">
+        <div class="kpi-header">
+            <span class="kpi-label">Efficiency</span>
+           
+        </div>
+        <div class="kpi-value">{{ overall_eff }}%</div>
+        <div class="progress-bar">
+            <div class="progress-fill {{ 'good' if overall_eff >= 95 else 'fair' if overall_eff >= 85 else 'poor' }}" style="width: {{ [overall_eff, 100] | min }}%"></div>
+        </div>
+    </div>
+    <div class="kpi-card">
+        <div class="kpi-header">
+            <span class="kpi-label">Total Defects</span>
+
+        </div>
+        <div class="kpi-value">{{ "{:,}".format(total_defects) }}</div>
+        <div class="kpi-footer">
+            <span class="kpi-tag {{ 'positive' if overall_fpy >= 95 else 'warning' if overall_fpy >= 90 else 'negative' }}">
+                {{ overall_fpy }}% FPY
+            </span>
+        </div>
+    </div>
+</div>
+
+<!-- SECONDARY KPIs -->
+<div class="kpi-grid kpi-secondary">
+    <div class="kpi-card">
+        <div class="kpi-header">
+            <span class="kpi-label">First Pass Yield</span>
+        </div>
+        <div class="kpi-value">{{ overall_fpy }}%</div>
+        <div class="progress-bar">
+            <div class="progress-fill {{ 'good' if overall_fpy >= 95 else 'fair' if overall_fpy >= 90 else 'poor' }}" style="width: {{ overall_fpy }}%"></div>
+        </div>
+    </div>
+    <div class="kpi-card">
+        <div class="kpi-header">
+            <span class="kpi-label">UPLH (Units/Labor Hr)</span>
+        </div>
+        <div class="kpi-value">{{ overall_uplh }}</div>
+        <div class="kpi-footer">
+            <span class="kpi-tag {{ 'positive' if overall_uplh >= 3 else 'warning' if overall_uplh >= 2 else 'negative' }}">
+                {{ 'Excellent' if overall_uplh >= 3 else 'Good' if overall_uplh >= 2 else 'Below Target' }}
+            </span>
+        </div>
+    </div>
+    <div class="kpi-card">
+        <div class="kpi-header">
+            <span class="kpi-label">Production Days</span>
+           
+        </div>
+        <div class="kpi-value">{{ status_counts.get('Production', 0) // 2 }}</div>
+        <div class="kpi-footer">
+            <span class="kpi-tag neutral">days active</span>
+        </div>
+    </div>
+    <div class="kpi-card">
+        <div class="kpi-header">
+            <span class="kpi-label">Downtime</span>
+            
+        </div>
+        <div class="kpi-value">{{ (status_counts.get('Maintenance', 0) + status_counts.get('Holiday', 0)) // 2 }}</div>
+        <div class="kpi-footer">
+            <span class="kpi-tag warning">
+                {{ status_counts.get('Maintenance', 0) // 2 }}  · {{ status_counts.get('Holiday', 0) // 2 }}
+            </span>
+        </div>
+    </div>
+</div>
+
+<!-- CHARTS ROW 1 -->
+<div class="charts-grid">
+    <div class="chart-card">
+        <div class="chart-header">
+            <h3>Planned vs Actual</h3>
+            <span class="chart-badge">{{ params.range_type | capitalize }}</span>
+        </div>
+        <canvas id="prodChart"></canvas>
+    </div>
+    <div class="chart-card">
+        <div class="chart-header">
+            <h3>  Defects</h3>
+            <span class="chart-badge">per period</span>
+        </div>
+        <canvas id="defectChart"></canvas>
+    </div>
+</div>
+
+<!-- CHARTS ROW 2 -->
+<div class="charts-grid two-equal">
+    <div class="chart-card">
+        <div class="chart-header">
+            <h3>  FPY & Efficiency</h3>
+            <span class="chart-badge">% — green line = 95% target</span>
+        </div>
+        <canvas id="fpyEffChart"></canvas>
+    </div>
+    <div class="chart-card">
+        <div class="chart-header">
+            <h3> UPLH (Units per Labor Hour)</h3>
+            <span class="chart-badge">green line = 3.0 target</span>
+        </div>
+        <canvas id="uplhChart"></canvas>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const labels = {{ dates | tojson }};
+const showDots = labels.length <= 30;
+const pR = showDots ? 3 : 0;
+const pHR = showDots ? 5 : 3;
+const grid = 'rgba(100,116,139,0.08)';
+const sc = {
+    x: { ticks: { color: '#64748b', font: { size: 10 }, maxRotation: 45 }, grid: { color: grid } },
+    y: { ticks: { color: '#64748b', font: { size: 11 } }, grid: { color: grid } }
+};
+
+// Planned vs Actual
+new Chart(document.getElementById('prodChart'), {
+    type: 'line',
+    data: {
+        labels,
+        datasets: [
+            { label: 'Actual', data: {{ actuals | tojson }}, borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.1)', fill: true, tension: 0.3, borderWidth: 2, pointRadius: pR, pointHoverRadius: pHR },
+            { label: 'Planned', data: {{ planned_list | tojson }}, borderColor: '#6366f1', borderDash: [6,3], tension: 0.3, borderWidth: 2, pointRadius: pR, pointHoverRadius: pHR }
+        ]
+    },
+    options: { responsive: true, scales: sc, plugins: { legend: { labels: { color: '#94a3b8' } } } }
+});
+
+// Defects
+new Chart(document.getElementById('defectChart'), {
+    type: 'bar',
+    data: {
+        labels,
+        datasets: [{ label: 'Defects', data: {{ defects | tojson }},
+            backgroundColor: {{ defects | tojson }}.map(v => v > 30 ? 'rgba(239,68,68,0.7)' : v > 15 ? 'rgba(245,158,11,0.7)' : 'rgba(16,185,129,0.7)'),
+            borderRadius: 4 }]
+    },
+    options: { responsive: true, scales: sc, plugins: { legend: { display: false } } }
+});
+
+// FPY + Efficiency + 95% target line
+new Chart(document.getElementById('fpyEffChart'), {
+    type: 'line',
+    data: {
+        labels,
+        datasets: [
+            { label: 'FPY %', data: {{ fpy_list | tojson }}, borderColor: '#a855f7', backgroundColor: 'rgba(168,85,247,0.08)', fill: true, tension: 0.3, borderWidth: 2, pointRadius: pR, pointHoverRadius: pHR },
+            { label: 'Efficiency %', data: {{ eff_list | tojson }}, borderColor: '#6366f1', tension: 0.3, borderWidth: 2, borderDash: [4,2], pointRadius: pR, pointHoverRadius: pHR },
+            { label: '95% Target', data: labels.map(() => 95), borderColor: '#10b981', borderWidth: 2, borderDash: [10,5], pointRadius: 0, pointHoverRadius: 0, fill: false }
+        ]
+    },
+    options: {
+        responsive: true,
+        scales: { ...sc, y: { ...sc.y, min: 60, max: 105, ticks: { ...sc.y.ticks, callback: v => v + '%' } } },
+        plugins: { legend: { labels: { color: '#94a3b8' } } }
+    }
+});
+
+// UPLH + 3.0 target line
+new Chart(document.getElementById('uplhChart'), {
+    type: 'line',
+    data: {
+        labels,
+        datasets: [
+            { label: 'UPLH', data: {{ uplh_list | tojson }}, borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.08)', fill: true, tension: 0.3, borderWidth: 2, pointRadius: pR, pointHoverRadius: pHR },
+            { label: '3.0 Target', data: labels.map(() => 3.0), borderColor: '#10b981', borderWidth: 2, borderDash: [10,5], pointRadius: 0, pointHoverRadius: 0, fill: false }
+        ]
+    },
+    options: {
+        responsive: true,
+        scales: { ...sc, y: { ...sc.y, min: 0, max: 5, ticks: { ...sc.y.ticks, stepSize: 0.5 } } },
+        plugins: { legend: { labels: { color: '#94a3b8' } } }
+    }
+});
+</script>
+{% endblock %}

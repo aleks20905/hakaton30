@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Dashboard</h1>
+
+<div class="cards">
+    <div>Efficiency: {{ summary.efficiency }}%</div>
+    <div>FPY: {{ summary.fpy }}%</div>
+    <div>Defect Rate: {{ summary.defect_rate }}%</div>
+</div>
+
+<canvas id="chart"></canvas>
+
+<script>
+const ctx = document.getElementById('chart');
+
+new Chart(ctx, {
+    type: 'line',
+    data: {
+        labels: {{ labels|tojson }},
+        datasets: [{
+            label: 'Efficiency',
+            data: {{ efficiency|tojson }},
+            borderWidth: 2
+        }]
+    }
+});
+</script>
+{% endblock %}

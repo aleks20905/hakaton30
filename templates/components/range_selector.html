@@ -1,0 +1,33 @@
+{% set base_url = request.path %}
+{% set rs = params.range_type %}
+
+<div class="range-selector">
+
+   <!-- Download -->
+    <a href="/download" class="action-btn download-btn">
+        <i class="bi bi-download"></i>
+        <span>Download</span>
+    </a>
+
+    <!-- Upload -->
+    <form action="/upload" method="POST" enctype="multipart/form-data" class="d-inline">
+        <label class="action-btn upload-btn">
+            <i class="bi bi-upload"></i>
+            <span>Upload</span>
+            <input type="file" name="file" accept=".xlsx" hidden onchange="this.form.submit()">
+        </label>
+    </form>
+
+    <div class="range-buttons">
+        <a href="{{ base_url }}?range=daily&shift={{ params.shift }}&product={{ params.product }}&view={{ params.view }}&start={{ params.start }}&end={{ params.end }}&start_month={{ params.start_month }}&end_month={{ params.end_month }}"
+           class="range-btn {{ 'active' if rs == 'daily' }}">📅 Daily</a>
+        <a href="{{ base_url }}?range=weekly&shift={{ params.shift }}&product={{ params.product }}&view={{ params.view }}&start={{ params.start }}&end={{ params.end }}&start_month={{ params.start_month }}&end_month={{ params.end_month }}"
+           class="range-btn {{ 'active' if rs == 'weekly' }}">📆 Weekly</a>
+        <a href="{{ base_url }}?range=monthly&shift={{ params.shift }}&product={{ params.product }}&view={{ params.view }}&start={{ params.start }}&end={{ params.end }}&start_month={{ params.start_month }}&end_month={{ params.end_month }}"
+           class="range-btn {{ 'active' if rs == 'monthly' }}">🗓️ Monthly</a>
+        <a href="{{ base_url }}?range=quarterly&shift={{ params.shift }}&product={{ params.product }}&view={{ params.view }}&start={{ params.start }}&end={{ params.end }}&start_month={{ params.start_month }}&end_month={{ params.end_month }}"
+           class="range-btn {{ 'active' if rs == 'quarterly' }}">📊 Quarterly</a>
+        <a href="{{ base_url }}?range=yearly&shift={{ params.shift }}&product={{ params.product }}&view={{ params.view }}&start={{ params.start }}&end={{ params.end }}&start_month={{ params.start_month }}&end_month={{ params.end_month }}"
+           class="range-btn {{ 'active' if rs == 'yearly' }}">📅 Yearly</a>
+    </div>
+</div>

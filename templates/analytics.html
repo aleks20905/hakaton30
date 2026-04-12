@@ -1,0 +1,139 @@
+{% extends "base.html" %}
+{% block title %}Analytics{% endblock %}
+{% block subtitle %}Deep performance insights{% endblock %}
+
+{% block content %}
+<div class="analytics-summary">
+    <div class="summary-pill">
+        <div class="pill-label">Avg Efficiency</div>
+        <div class="pill-value {{ 'green' if avg_eff >= 95 else 'amber' if avg_eff >= 85 else 'red' }}">{{ avg_eff }}%</div>
+    </div>
+    <div class="summary-pill">
+        <div class="pill-label">Avg FPY</div>
+        <div class="pill-value {{ 'green' if avg_fpy >= 95 else 'amber' if avg_fpy >= 90 else 'red' }}">{{ avg_fpy }}%</div>
+    </div>
+    <div class="summary-pill">
+        <div class="pill-label">Avg UPLH</div>
+        <div class="pill-value {{ 'green' if avg_uplh >= 3 else 'amber' if avg_uplh >= 2 else 'red' }}">{{ avg_uplh }}</div>
+    </div>
+    <div class="summary-pill">
+        <div class="pill-label">Best Efficiency</div>
+        <div class="pill-value green">{{ best_eff }}%</div>
+    </div>
+    <div class="summary-pill">
+        <div class="pill-label">Worst Efficiency</div>
+        <div class="pill-value red">{{ worst_eff }}%</div>
+    </div>
+    <div class="summary-pill">
+        <div class="pill-label">Total Produced</div>
+        <div class="pill-value blue">{{ "{:,}".format(total_actual) }}</div>
+    </div>
+    <div class="summary-pill">
+        <div class="pill-label">Total Defects</div>
+        <div class="pill-value red">{{ "{:,}".format(total_defects) }}</div>
+    </div>
+    <div class="summary-pill">
+        <div class="pill-label">Total Labor Hours</div>
+        <div class="pill-value blue">{{ "{:,.0f}".format(total_labor_hours) }}</div>
+    </div>
+</div>
+
+<div class="charts-grid two-equal">
+    <div class="chart-card">
+        <div class="chart-header">
+            <h3>Efficiency Trend</h3>
+            <span class="chart-badge">green = 95% target</span>
+        </div>
+        <canvas id="effChart"></canvas>
+    </div>
+    <div class="chart-card">
+        <div class="chart-header">
+            <h3>  FPY Trend</h3>
+            <span class="chart-badge">green = 95% target</span>
+        </div>
+        <canvas id="fpyChart"></canvas>
+    </div>
+</div>
+
+<div class="charts-grid two-equal">
+    <div class="chart-card">
+        <div class="chart-header">
+            <h3>  Defect Trend</h3>
+            <span class="chart-badge">count</span>
+        </div>
+        <canvas id="defChart"></canvas>
+    </div>
+    <div class="chart-card">
+        <div class="chart-header">
+            <h3>UPLH Trend</h3>
+            <span class="chart-badge">green = 3.0 target</span>
+        </div>
+        <canvas id="uplhChart"></canvas>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const labels = {{ dates | tojson }};
+const showDots = labels.length <= 30;
+const pR = showDots ? 3 : 0;
+const pHR = showDots ? 5 : 3;
+const grid = 'rgba(100,116,139,0.08)';
+const sc = {
+    x: { ticks: { color: '#64748b', font: { size: 10 }, maxRotation: 45 }, grid: { color: grid } },
+    y: { ticks: { color: '#64748b', font: { size: 11 } }, grid: { color: grid } }
+};
+
+// Efficiency + 95% line
+new Chart(document.getElementById('effChart'), {
+    type: 'line',
+    data: {
+        labels,
+        datasets: [
+            { label: 'Efficiency %', data: {{ efficiency | tojson }}, borderColor: '#6366f1', backgroundColor: 'rgba(99,102,241,0.08)', fill: true, tension: 0.3, borderWidth: 2, pointRadius: pR, pointHoverRadius: pHR },
+            { label: '95% Target', data: labels.map(() => 95), borderColor: '#10b981', borderWidth: 2, borderDash: [10,5], pointRadius: 0, fill: false }
+        ]
+    },
+    options: { responsive: true, scales: { ...sc, y: { ...sc.y, min: 60, max: 110 } }, plugins: { legend: { labels: { color: '#94a3b8' } } } }
+});
+
+// FPY + 95% line
+new Chart(document.getElementById('fpyChart'), {
+    type: 'line',
+    data: {
+        labels,
+        datasets: [
+            { label: 'FPY %', data: {{ fpy_list | tojson }}, borderColor: '#a855f7', backgroundColor: 'rgba(168,85,247,0.08)', fill: true, tension: 0.3, borderWidth: 2, pointRadius: pR, pointHoverRadius: pHR },
+            { label: '95% Target', data: labels.map(() => 95), borderColor: '#10b981', borderWidth: 2, borderDash: [10,5], pointRadius: 0, fill: false }
+        ]
+    },
+    options: { responsive: true, scales: { ...sc, y: { ...sc.y, min: 60, max: 105 } }, plugins: { legend: { labels: { color: '#94a3b8' } } } }
+});
+
+// Defects
+new Chart(document.getElementById('defChart'), {
+    type: 'bar',
+    data: {
+        labels,
+        datasets: [{ label: 'Defects', data: {{ defects | tojson }},
+            backgroundColor: {{ defects | tojson }}.map(v => v > 30 ? 'rgba(239,68,68,0.7)' : v > 15 ? 'rgba(245,158,11,0.7)' : 'rgba(16,185,129,0.7)'),
+            borderRadius: 4 }]
+    },
+    options: { responsive: true, scales: sc, plugins: { legend: { display: false } } }
+});
+
+// UPLH + 3.0 line
+new Chart(document.getElementById('uplhChart'), {
+    type: 'line',
+    data: {
+        labels,
+        datasets: [
+            { label: 'UPLH', data: {{ uplh_list | tojson }}, borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.08)', fill: true, tension: 0.3, borderWidth: 2, pointRadius: pR, pointHoverRadius: pHR },
+            { label: '3.0 Target', data: labels.map(() => 3.0), borderColor: '#10b981', borderWidth: 2, borderDash: [10,5], pointRadius: 0, fill: false }
+        ]
+    },
+    options: { responsive: true, scales: { ...sc, y: { ...sc.y, min: 0, max: 5 } }, plugins: { legend: { labels: { color: '#94a3b8' } } } }
+});
+</script>
+{% endblock %}

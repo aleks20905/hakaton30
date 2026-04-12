@@ -1,0 +1,158 @@
+{% set base = request.path %}
+<div class="date-filters">
+    <form method="GET" action="{{ base }}" class="filter-section">
+        <!-- Keep range -->
+        <input type="hidden" name="range" value="{{ params.range_type }}">
+
+        <!-- SHIFT SELECTOR -->
+        <div class="filter-group">
+            <select name="shift" class="filter-select" onchange="this.form.submit()">
+                <option value="all" {{ 'selected' if params.shift == 'all' }}>All Shifts</option>
+                <option value="Shift 1" {{ 'selected' if params.shift == 'Shift 1' }}>☀️ Shift 1</option>
+                <option value="Shift 2" {{ 'selected' if params.shift == 'Shift 2' }}>🌙 Shift 2</option>
+            </select>
+        </div>
+
+        <!-- VIEW MODE -->
+        <div class="filter-group">
+            <select name="view" class="filter-select" onchange="this.form.submit()">
+                <option value="combined" {{ 'selected' if params.view == 'combined' }}>Combined</option>
+                <option value="per_shift" {{ 'selected' if params.view == 'per_shift' }}>Per Shift</option>
+            </select>
+        </div>
+
+        <!-- PRODUCT SELECTOR -->
+        <div class="filter-group">
+            <select name="product" class="filter-select" onchange="this.form.submit()">
+                <option value="all" {{ 'selected' if params.product == 'all' }}>All Products</option>
+                {% for p in bounds.products %}
+                <option value="{{ p }}" {{ 'selected' if params.product == p }}>{{ p }}</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <!-- DATE RANGE PICKER -->
+        <div class="filter-group">
+            <button type="button" class="filter-toggle" onclick="toggleDropdown('dateDropdown')">
+                Date Range
+                {% if params.start or params.end %}
+                <span class="filter-value-preview">{{ params.start or '...' }} → {{ params.end or '...' }}</span>
+                {% endif %}
+                <span class="toggle-arrow">▼</span>
+            </button>
+            <div id="dateDropdown" class="filter-dropdown">
+                <div class="filter-form">
+                    <div class="filter-row">
+                        <div class="filter-field">
+                            <label>From Date</label>
+                            <input type="date" name="start" class="filter-input"
+                                   value="{{ params.start }}"
+                                   min="{{ bounds.min_date }}" max="{{ bounds.max_date }}">
+                        </div>
+                        <span class="filter-arrow">→</span>
+                        <div class="filter-field">
+                            <label>To Date</label>
+                            <input type="date" name="end" class="filter-input"
+                                   value="{{ params.end }}"
+                                   min="{{ bounds.min_date }}" max="{{ bounds.max_date }}">
+                        </div>
+                    </div>
+                    <div class="filter-actions">
+                        <button type="submit" class="filter-apply">Apply Date Range</button>
+                        <a href="{{ base }}?range={{ params.range_type }}&shift={{ params.shift }}&product={{ params.product }}&view={{ params.view }}" class="filter-clear">Clear</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- MONTH RANGE PICKER -->
+        <div class="filter-group">
+            <button type="button" class="filter-toggle" onclick="toggleDropdown('monthDropdown')">
+                Month Range
+                {% if params.start_month or params.end_month %}
+                <span class="filter-value-preview">{{ params.start_month or '...' }} → {{ params.end_month or '...' }}</span>
+                {% endif %}
+                <span class="toggle-arrow">▼</span>
+            </button>
+            <div id="monthDropdown" class="filter-dropdown">
+                <div class="filter-form">
+                    <div class="filter-row">
+                        <div class="filter-field">
+                            <label>From Month</label>
+                            <input type="month" name="start_month" class="filter-input"
+                                   value="{{ params.start_month }}"
+                                   min="{{ bounds.min_month }}" max="{{ bounds.max_month }}">
+                        </div>
+                        <span class="filter-arrow">→</span>
+                        <div class="filter-field">
+                            <label>To Month</label>
+                            <input type="month" name="end_month" class="filter-input"
+                                   value="{{ params.end_month }}"
+                                   min="{{ bounds.min_month }}" max="{{ bounds.max_month }}">
+                        </div>
+                    </div>
+                    <div class="filter-actions">
+                        <button type="submit" class="filter-apply">Apply Month Range</button>
+                        <a href="{{ base }}?range={{ params.range_type }}&shift={{ params.shift }}&product={{ params.product }}&view={{ params.view }}" class="filter-clear">Clear</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Active filter display -->
+        {% if params.start or params.end or params.start_month or params.end_month or params.shift != 'all' or params.product != 'all' %}
+        <a href="{{ base }}?range={{ params.range_type }}" class="clear-all-btn">✕ Clear All</a>
+        {% endif %}
+    </form>
+</div>
+
+<script>
+function toggleDropdown(id) {
+    document.querySelectorAll('.filter-dropdown').forEach(d => {
+        if (d.id !== id) d.classList.remove('show');
+    });
+    document.getElementById(id).classList.toggle('show');
+}
+document.addEventListener('click', function(e) {
+    if (!e.target.closest('.filter-group')) {
+        document.querySelectorAll('.filter-dropdown').forEach(d => d.classList.remove('show'));
+    }
+});
+
+document.addEventListener('DOMContentLoaded', function() {
+    const startDate = document.querySelector('input[name="start"]');
+    const endDate = document.querySelector('input[name="end"]');
+    const startMonth = document.querySelector('input[name="start_month"]');
+    const endMonth = document.querySelector('input[name="end_month"]');
+    
+    if (startDate && endDate) {
+        startDate.addEventListener('change', function() {
+            if (endDate.value && this.value > endDate.value) {
+                endDate.value = this.value;
+            }
+            endDate.min = this.value;
+        });
+        endDate.addEventListener('change', function() {
+            if (startDate.value && this.value < startDate.value) {
+                startDate.value = this.value;
+            }
+            startDate.max = this.value;
+        });
+    }
+    
+    if (startMonth && endMonth) {
+        startMonth.addEventListener('change', function() {
+            if (endMonth.value && this.value > endMonth.value) {
+                endMonth.value = this.value;
+            }
+            endMonth.min = this.value;
+        });
+        endMonth.addEventListener('change', function() {
+            if (startMonth.value && this.value < startMonth.value) {
+                startMonth.value = this.value;
+            }
+            startMonth.max = this.value;
+        });
+    }
+});
+</script>
