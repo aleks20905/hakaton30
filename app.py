@@ -10,7 +10,8 @@ app.secret_key = os.environ.get("SECRET_KEY", "dev-only")
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.environ.get("DATA_DIR", os.path.join(BASE_DIR, "data"))
 DATA_PATH = os.path.join(DATA_DIR, "production_data.xlsx")
-UPLOAD_FOLDER = "data"
+UPLOAD_FOLDER = DATA_DIR
+
 
 def load_data():
     if not os.path.exists(DATA_PATH):

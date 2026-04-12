@@ -58,8 +58,8 @@ in
         FLASK_DEBUG = "false";
       };
 
-      serviceConfig = {
-        ExecStart = "${pythonEnv}/bin/gunicorn -w 4 -b 127.0.0.1:${toString cfg.port} app:app";
+      serviceConfig = { 
+        ExecStart = "${pythonEnv}/bin/gunicorn -w 4 -b 0.0.0.0:${toString cfg.port} app:app";
         WorkingDirectory = "${appPkg}";
         EnvironmentFile = cfg.secretKeyFile;
         Restart = "always";
