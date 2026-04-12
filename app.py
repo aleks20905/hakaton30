@@ -15,7 +15,7 @@ UPLOAD_FOLDER = DATA_DIR
 
 def load_data():
     if not os.path.exists(DATA_PATH):
-        raise FileNotFoundError("production_data.xlsx not found in /data folder")
+        return None
     dataframe = pd.read_excel(DATA_PATH)
     dataframe["date"] = pd.to_datetime(dataframe["date"])
     return dataframe
@@ -183,6 +183,9 @@ def production_kpis(filtered_dataframe):
 @app.route("/")
 def index():
     dataframe = load_data()
+    if dataframe is None:
+        return render_template("waiting.html"), 503
+    
     parameters = get_params(request.args)
     bounds = get_bounds(dataframe)
     filtered_dataframe = apply_filters(dataframe, parameters)
@@ -207,6 +210,9 @@ def index():
 @app.route("/records")
 def records():
     dataframe = load_data()
+    if dataframe is None:
+        return render_template("waiting.html"), 503
+    
     parameters = get_params(request.args)
     bounds = get_bounds(dataframe)
     filtered_dataframe = apply_filters(dataframe, parameters)
@@ -223,6 +229,9 @@ def records():
 @app.route("/analytics")
 def analytics():
     dataframe = load_data()
+    if dataframe is None:
+        return render_template("waiting.html"), 503
+    
     parameters = get_params(request.args)
     bounds = get_bounds(dataframe)
     filtered_dataframe = apply_filters(dataframe, parameters)
