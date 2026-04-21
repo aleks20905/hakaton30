@@ -30,6 +30,7 @@
             flask
             pandas
             openpyxl
+            xlrd
             gunicorn
           ]))
         ];
