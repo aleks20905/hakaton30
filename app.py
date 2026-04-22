@@ -1,267 +1,366 @@
-from flask import Flask, render_template, request, send_file, redirect
+from flask import Flask, render_template, request, send_file, redirect, url_for, flash, abort
+from functools import lru_cache
+from datetime import datetime
 import pandas as pd
-from calendar import monthrange
-from datetime import datetime, timedelta
 import os
 
+from analytics_helpers import (
+    monthly_rollup,
+    current_month_kpis,
+    family_breakdown,
+    top_items,
+    daily_breakdown,
+    backlog_by_month,
+    forecast_vs_capacity,
+    get_month_range,
+    apply_family_filter,
+)
+
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "dev-only")
+app.secret_key = os.environ.get("SECRET_KEY", "dev-only-change-me")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.environ.get("DATA_DIR", os.path.join(BASE_DIR, "data"))
-DATA_PATH = os.path.join(DATA_DIR, "production_data.xlsx")
-UPLOAD_FOLDER = DATA_DIR
+DATA_PATH = os.path.join(DATA_DIR, "Unified_Production_Analytics.xlsx")
+
+os.makedirs(DATA_DIR, exist_ok=True)
+
+
+# ==============================================================================
+# DATA LOADING (cached by file mtime)
+# ==============================================================================
+@lru_cache(maxsize=1)
+def _load_cached(mtime: float):
+    """Load all sheets once per file version. mtime invalidates cache on upload."""
+    sheets = pd.read_excel(DATA_PATH, sheet_name=None)
+
+    # Normalize column names across all sheets
+    for name, df in sheets.items():
+        df.columns = df.columns.str.lower().str.strip().str.replace(" ", "_")
+
+    capacity = sheets.get("Capacity_Calendar", pd.DataFrame())
+    backlog  = sheets.get("Demand_Backlog", pd.DataFrame())
+    forecast = sheets.get("Production_Forecast", pd.DataFrame())
+    actuals  = sheets.get("Production_Actuals", pd.DataFrame())
+    items    = sheets.get("Item_Master", pd.DataFrame())
+
+    # Parse dates defensively
+    if "month" in capacity.columns:
+        capacity["month"] = pd.to_datetime(capacity["month"], errors="coerce")
+        capacity["month_period"] = capacity["month"].dt.strftime("%Y-%m")
+
+    if "due_date" in backlog.columns:
+        backlog["due_date"] = pd.to_datetime(backlog["due_date"], errors="coerce")
+        backlog["month_period"] = backlog["due_date"].dt.strftime("%Y-%m")
+
+    if "year_month" in forecast.columns:
+        forecast["year_month"] = pd.to_datetime(forecast["year_month"], errors="coerce")
+        forecast["month_period"] = forecast["year_month"].dt.strftime("%Y-%m")
+
+    if "transaction_date" in actuals.columns:
+        actuals["transaction_date"] = pd.to_datetime(actuals["transaction_date"], errors="coerce")
+        actuals["month_period"] = actuals["transaction_date"].dt.strftime("%Y-%m")
+
+    return {
+        "capacity": capacity,
+        "backlog": backlog,
+        "forecast": forecast,
+        "actuals": actuals,
+        "items": items,
+    }
 
 
 def load_data():
     if not os.path.exists(DATA_PATH):
         return None
-    dataframe = pd.read_excel(DATA_PATH)
-    dataframe["date"] = pd.to_datetime(dataframe["date"])
-    return dataframe
-
-def allowed_file(filename):
-    return "." in filename and filename.rsplit(".", 1)[1].lower() == "xlsx"
-
-@app.route("/upload", methods=["POST"])
-def upload_file():
-    if "file" not in request.files:
-        return "No file part", 400
-    uploaded_file = request.files["file"]
-    if uploaded_file.filename == "":
-        return "No file selected", 400
-    if not allowed_file(uploaded_file.filename):
-        return "Only .xlsx files are allowed", 400
-    
-    temp_path = os.path.join(UPLOAD_FOLDER, "production_data_temp.xlsx")
-    final_path = os.path.join(UPLOAD_FOLDER, "production_data.xlsx")
-    
-    uploaded_file.save(temp_path)
-    
     try:
-        test_dataframe = pd.read_excel(temp_path)
-        required_columns = {"date", "planned", "actual", "defects"}
-        if not required_columns.issubset(test_dataframe.columns):
-            os.remove(temp_path)
-            return f"Missing required columns: {required_columns - set(test_dataframe.columns)}", 400
-    except Exception as error:
-        os.remove(temp_path)
-        return f"Could not read file: {error}", 400
-    
-    os.replace(temp_path, final_path)
-    return redirect(request.referrer or "/")
+        return _load_cached(os.path.getmtime(DATA_PATH))
+    except Exception as e:
+        app.logger.error(f"Failed to load data: {e}")
+        return None
 
-@app.route("/download")
-def download_file():
-    if not os.path.exists(DATA_PATH):
-        return "File not found", 404
-    return send_file(DATA_PATH, as_attachment=True, download_name="production_data.xlsx")
 
-def get_default_end():
-    """Latest date in reasonable range"""
-    return datetime.now().strftime("%Y-%m-%d")
-
-def get_default_start_daily():
-    """30 days back from today"""
-    return (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
-
-def get_params(arguments):
-    range_type = arguments.get("range", "daily")
-
-    start_date = arguments.get("start", "")
-    end_date = arguments.get("end", "")
-    start_month = arguments.get("start_month", "")
-    end_month = arguments.get("end_month", "")
-
-    has_any_parameter = any(key in arguments for key in ["range", "start", "end", "start_month", "end_month", "shift", "product", "view"])
-
-    if range_type == "daily" and not start_date and not end_date and not has_any_parameter:
-        start_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
-        end_date = datetime.now().strftime("%Y-%m-%d")
-
-    if start_date and end_date and start_date > end_date:
-        start_date, end_date = end_date, start_date
-    if start_month and end_month and start_month > end_month:
-        start_month, end_month = end_month, start_month
-
+# ==============================================================================
+# REQUEST HELPERS
+# ==============================================================================
+def get_params(args):
+    """Extract and normalize filter params from query string."""
     return {
-        "range_type": range_type,
-        "start": start_date,
-        "end": end_date,
-        "start_month": start_month,
-        "end_month": end_month,
-        "shift": arguments.get("shift", "all"),
-        "product": arguments.get("product", "all"),
-        "view": arguments.get("view", "combined"),
+        "start_month": args.get("start_month", "").strip(),
+        "end_month":   args.get("end_month", "").strip(),
+        "family":      args.get("family", "all").strip(),
+        "item":        args.get("item", "").strip(),
+        "quick":       args.get("quick", "").strip(),
     }
 
-def apply_filters(dataframe, parameters):
-    if parameters["start"]:
-        dataframe = dataframe[dataframe["date"] >= pd.to_datetime(parameters["start"])]
-    if parameters["end"]:
-        dataframe = dataframe[dataframe["date"] <= pd.to_datetime(parameters["end"])]
-    if parameters["start_month"]:
-        dataframe = dataframe[dataframe["date"] >= pd.to_datetime(parameters["start_month"] + "-01")]
-    if parameters["end_month"]:
-        end_datetime = pd.to_datetime(parameters["end_month"] + "-01")
-        last_day = monthrange(end_datetime.year, end_datetime.month)[1]
-        dataframe = dataframe[dataframe["date"] <= end_datetime.replace(day=last_day)]
-    if parameters["shift"] != "all":
-        dataframe = dataframe[dataframe["shift"] == parameters["shift"]]
-    if parameters["product"] != "all":
-        dataframe = dataframe[dataframe["product"] == parameters["product"]]
-    return dataframe
 
-def group_data(dataframe, range_type, view="combined"):
-    dataframe = dataframe.copy()
+def resolve_date_range(params, data):
+    """Resolve start_month/end_month, applying 'quick' shortcuts."""
+    today = pd.Timestamp.today().normalize()
+    this_month = today.strftime("%Y-%m")
 
-    if range_type == "daily":
-        dataframe["period"] = dataframe["date"].dt.strftime("%Y-%m-%d")
-    elif range_type == "weekly":
-        dataframe["period"] = dataframe["date"].dt.to_period("W").apply(lambda week_range: week_range.start_time.strftime("%Y-%m-%d"))
-    elif range_type == "monthly":
-        dataframe["period"] = dataframe["date"].dt.strftime("%Y-%m")
-    elif range_type == "quarterly":
-        dataframe["period"] = dataframe["date"].dt.to_period("Q").astype(str)
-    elif range_type == "yearly":
-        dataframe["period"] = dataframe["date"].dt.strftime("%Y")
-    else:
-        dataframe["period"] = dataframe["date"].dt.strftime("%Y-%m-%d")
+    quick = params.get("quick", "")
+    if quick == "this_month":
+        return this_month, this_month
+    if quick == "last_3":
+        start = (today - pd.DateOffset(months=2)).strftime("%Y-%m")
+        return start, this_month
+    if quick == "next_3":
+        end = (today + pd.DateOffset(months=3)).strftime("%Y-%m")
+        return this_month, end
+    if quick == "ytd":
+        return f"{today.year}-01", this_month
+    if quick == "next_6":
+        end = (today + pd.DateOffset(months=6)).strftime("%Y-%m")
+        return this_month, end
 
-    group_columns = ["period"]
-    if view == "per_shift":
-        group_columns.append("shift")
+    # Fall back to explicit params or defaults from data
+    start = params.get("start_month") or data_default_start(data)
+    end   = params.get("end_month")   or data_default_end(data)
+    return start, end
 
-    grouped_dataframe = dataframe.groupby(group_columns).agg(
-        planned=("planned", "sum"),
-        actual=("actual", "sum"),
-        defects=("defects", "sum"),
-        labor_hours=("labor_hours", "sum"),
-        workers=("workers", "sum"),
-    ).reset_index()
 
-    grouped_dataframe["efficiency"] = grouped_dataframe.apply(
-        lambda row: round((row["actual"] / row["planned"]) * 100, 1) if row["planned"] > 0 else 0, axis=1)
-    grouped_dataframe["fpy"] = grouped_dataframe.apply(
-        lambda row: round(((row["actual"] - row["defects"]) / row["actual"]) * 100, 1) if row["actual"] > 0 else 0, axis=1)
-    grouped_dataframe["uplh"] = grouped_dataframe.apply(
-        lambda row: round(row["actual"] / row["labor_hours"], 2) if row["labor_hours"] > 0 else 0, axis=1)
-    grouped_dataframe["gap"] = grouped_dataframe["actual"] - grouped_dataframe["planned"]
+def data_default_start(data):
+    """Default start = earliest actuals month, fall back to capacity."""
+    if not data["actuals"].empty and "month_period" in data["actuals"]:
+        vals = data["actuals"]["month_period"].dropna()
+        if len(vals):
+            return vals.min()
+    if not data["capacity"].empty:
+        return data["capacity"]["month_period"].min()
+    return pd.Timestamp.today().strftime("%Y-%m")
 
-    return grouped_dataframe
 
-def get_bounds(dataframe):
+def data_default_end(data):
+    """Default end = latest forecast month, fall back to capacity."""
+    if not data["forecast"].empty and "month_period" in data["forecast"]:
+        vals = data["forecast"]["month_period"].dropna()
+        if len(vals):
+            return vals.max()
+    if not data["capacity"].empty:
+        return data["capacity"]["month_period"].max()
+    return pd.Timestamp.today().strftime("%Y-%m")
+
+
+def get_filter_options(data):
+    """Build dropdown options for family filter."""
+    families = set()
+    for key in ("backlog", "forecast", "actuals"):
+        df = data[key]
+        if "family_code" in df.columns:
+            families.update(df["family_code"].dropna().astype(str).unique())
     return {
-        "min_date": dataframe["date"].min().strftime("%Y-%m-%d"),
-        "max_date": dataframe["date"].max().strftime("%Y-%m-%d"),
-        "min_month": dataframe["date"].min().strftime("%Y-%m"),
-        "max_month": dataframe["date"].max().strftime("%Y-%m"),
-        "products": sorted(dataframe[dataframe["product"] != "-"]["product"].unique().tolist()),
+        "families": sorted(families),
     }
 
-def production_kpis(filtered_dataframe):
-    production_data = filtered_dataframe[filtered_dataframe["status"] == "Production"]
-    total_planned = int(production_data["planned"].sum())
-    total_actual = int(production_data["actual"].sum())
-    total_defects = int(production_data["defects"].sum())
-    total_labor_hours = float(production_data["labor_hours"].sum())
-    overall_efficiency = round((total_actual / total_planned) * 100, 1) if total_planned > 0 else 0
-    overall_fpy = round(((total_actual - total_defects) / total_actual) * 100, 1) if total_actual > 0 else 0
-    overall_uplh = round(total_actual / total_labor_hours, 2) if total_labor_hours > 0 else 0
-    status_counts = filtered_dataframe["status"].value_counts().to_dict()
-    return {
-        "total_planned": total_planned,
-        "total_actual": total_actual,
-        "total_defects": total_defects,
-        "total_labor_hours": total_labor_hours,
-        "overall_eff": overall_efficiency,
-        "overall_fpy": overall_fpy,
-        "overall_uplh": overall_uplh,
-        "status_counts": status_counts,
-    }
 
+def build_query_string(params):
+    """Build URL query string from params for nav link preservation."""
+    parts = []
+    for k, v in params.items():
+        if v and v != "all":
+            parts.append(f"{k}={v}")
+    return "&".join(parts)
+
+
+# ==============================================================================
+# ROUTES
+# ==============================================================================
 @app.route("/")
 def index():
-    dataframe = load_data()
-    if dataframe is None:
+    data = load_data()
+    if data is None:
         return render_template("waiting.html"), 503
-    
-    parameters = get_params(request.args)
-    bounds = get_bounds(dataframe)
-    filtered_dataframe = apply_filters(dataframe, parameters)
-    grouped_dataframe = group_data(filtered_dataframe, parameters["range_type"], parameters["view"])
-    kpis = production_kpis(filtered_dataframe)
 
-    return render_template("index.html",
+    params = get_params(request.args)
+    start, end = resolve_date_range(params, data)
+    params["start_month"], params["end_month"] = start, end
+
+    # Apply family filter
+    filtered = apply_family_filter(data, params["family"])
+
+    # Build data
+    rollup = monthly_rollup(filtered, start, end)
+    kpis = current_month_kpis(filtered)
+    fam_mix = family_breakdown(filtered, start, end)
+    top = top_items(filtered, start, end, n=10)
+
+    options = get_filter_options(data)
+
+    return render_template(
+        "index.html",
         page="dashboard",
-        params=parameters,
-        bounds=bounds,
-        grouped=grouped_dataframe.to_dict("records"),
-        dates=grouped_dataframe["period"].tolist(),
-        actuals=grouped_dataframe["actual"].tolist(),
-        planned_list=grouped_dataframe["planned"].tolist(),
-        defects=grouped_dataframe["defects"].tolist(),
-        fpy_list=grouped_dataframe["fpy"].tolist(),
-        uplh_list=grouped_dataframe["uplh"].tolist(),
-        eff_list=grouped_dataframe["efficiency"].tolist(),
-        **kpis,
+        params=params,
+        options=options,
+        filter_query=build_query_string(params),
+        kpis=kpis,
+        # Chart data
+        months=rollup["month_period"].tolist(),
+        capacity_hours=rollup["capacity_hours"].tolist(),
+        actual_hours=rollup["actual_hours"].tolist(),
+        backlog_hours=rollup["backlog_hours"].tolist(),
+        forecast_hours=rollup["forecast_hours"].tolist(),
+        op_eff=rollup["operational_efficiency"].tolist(),
+        load_ratio=rollup["load_ratio"].tolist(),
+        family_mix=fam_mix,
+        top_items=top,
     )
 
-@app.route("/records")
-def records():
-    dataframe = load_data()
-    if dataframe is None:
+
+@app.route("/capacity")
+def capacity_view():
+    data = load_data()
+    if data is None:
         return render_template("waiting.html"), 503
-    
-    parameters = get_params(request.args)
-    bounds = get_bounds(dataframe)
-    filtered_dataframe = apply_filters(dataframe, parameters)
-    grouped_dataframe = group_data(filtered_dataframe, parameters["range_type"], parameters["view"])
 
-    return render_template("records.html",
-        page="records",
-        params=parameters,
-        bounds=bounds,
-        data=grouped_dataframe.to_dict("records"),
-        total=len(grouped_dataframe),
+    params = get_params(request.args)
+    start, end = resolve_date_range(params, data)
+    params["start_month"], params["end_month"] = start, end
+
+    filtered = apply_family_filter(data, params["family"])
+    rollup = monthly_rollup(filtered, start, end)
+    options = get_filter_options(data)
+
+    return render_template(
+        "capacity.html",
+        page="capacity",
+        params=params,
+        options=options,
+        filter_query=build_query_string(params),
+        rollup=rollup.to_dict("records"),
+        months=rollup["month_period"].tolist(),
+        capacity_hours=rollup["capacity_hours"].tolist(),
+        actual_hours=rollup["actual_hours"].tolist(),
+        backlog_hours=rollup["backlog_hours"].tolist(),
+        forecast_hours=rollup["forecast_hours"].tolist(),
+        op_eff=rollup["operational_efficiency"].tolist(),
+        load_ratio=rollup["load_ratio"].tolist(),
     )
 
-@app.route("/analytics")
-def analytics():
-    dataframe = load_data()
-    if dataframe is None:
+
+@app.route("/backlog")
+def backlog_view():
+    data = load_data()
+    if data is None:
         return render_template("waiting.html"), 503
-    
-    parameters = get_params(request.args)
-    bounds = get_bounds(dataframe)
-    filtered_dataframe = apply_filters(dataframe, parameters)
-    grouped_dataframe = group_data(filtered_dataframe, parameters["range_type"], parameters["view"])
-    kpis = production_kpis(filtered_dataframe)
 
-    average_efficiency = round(grouped_dataframe["efficiency"].mean(), 1) if len(grouped_dataframe) else 0
-    best_efficiency = round(grouped_dataframe["efficiency"].max(), 1) if len(grouped_dataframe) else 0
-    worst_efficiency = round(grouped_dataframe["efficiency"].min(), 1) if len(grouped_dataframe) else 0
-    average_fpy = round(grouped_dataframe["fpy"].mean(), 1) if len(grouped_dataframe) else 0
-    average_uplh = round(grouped_dataframe["uplh"].mean(), 2) if len(grouped_dataframe) else 0
+    params = get_params(request.args)
+    start, end = resolve_date_range(params, data)
+    params["start_month"], params["end_month"] = start, end
 
-    return render_template("analytics.html",
-        page="analytics",
-        params=parameters,
-        bounds=bounds,
-        grouped=grouped_dataframe.to_dict("records"),
-        dates=grouped_dataframe["period"].tolist(),
-        efficiency=grouped_dataframe["efficiency"].tolist(),
-        fpy_list=grouped_dataframe["fpy"].tolist(),
-        defects=grouped_dataframe["defects"].tolist(),
-        uplh_list=grouped_dataframe["uplh"].tolist(),
-        eff_list=grouped_dataframe["efficiency"].tolist(),
-        avg_eff=average_efficiency,
-        best_eff=best_efficiency,
-        worst_eff=worst_efficiency,
-        avg_fpy=average_fpy,
-        avg_uplh=average_uplh,
-        **kpis,
+    filtered = apply_family_filter(data, params["family"])
+    by_month = backlog_by_month(filtered, start, end)
+    options = get_filter_options(data)
+
+    # Top backlog orders
+    bl = filtered["backlog"].copy()
+    if "month_period" in bl.columns:
+        bl = bl[(bl["month_period"] >= start) & (bl["month_period"] <= end)]
+    top_orders = bl.nlargest(20, "total_labor_hours") if "total_labor_hours" in bl.columns else pd.DataFrame()
+
+    return render_template(
+        "backlog.html",
+        page="backlog",
+        params=params,
+        options=options,
+        filter_query=build_query_string(params),
+        months=by_month["month_period"].tolist(),
+        backlog_hours=by_month["backlog_hours"].tolist(),
+        order_counts=by_month["order_count"].tolist(),
+        top_orders=top_orders.to_dict("records"),
+        total_orders=len(bl),
+        total_hours=round(bl["total_labor_hours"].sum(), 1) if "total_labor_hours" in bl.columns else 0,
     )
+
+
+@app.route("/forecast")
+def forecast_view():
+    data = load_data()
+    if data is None:
+        return render_template("waiting.html"), 503
+
+    params = get_params(request.args)
+    start, end = resolve_date_range(params, data)
+    params["start_month"], params["end_month"] = start, end
+
+    filtered = apply_family_filter(data, params["family"])
+    fvc = forecast_vs_capacity(filtered, start, end)
+    options = get_filter_options(data)
+
+    return render_template(
+        "forecast.html",
+        page="forecast",
+        params=params,
+        options=options,
+        filter_query=build_query_string(params),
+        months=fvc["month_period"].tolist(),
+        capacity_hours=fvc["capacity_hours"].tolist(),
+        forecast_hours=fvc["forecast_hours"].tolist(),
+        forecast_eff=fvc["forecast_efficiency"].tolist(),
+        rows=fvc.to_dict("records"),
+    )
+
+
+@app.route("/daily/<month>")
+def daily_view(month):
+    """Daily drill-down for a specific month (YYYY-MM)."""
+    data = load_data()
+    if data is None:
+        return render_template("waiting.html"), 503
+
+    # Validate month format
+    try:
+        datetime.strptime(month, "%Y-%m")
+    except ValueError:
+        abort(404)
+
+    params = get_params(request.args)
+    filtered = apply_family_filter(data, params["family"])
+    daily = daily_breakdown(filtered, month)
+    options = get_filter_options(data)
+
+    return render_template(
+        "daily.html",
+        page="daily",
+        month=month,
+        params=params,
+        options=options,
+        filter_query=build_query_string(params),
+        dates=daily["date"].tolist(),
+        quantities=daily["quantity"].tolist(),
+        hours=daily["hours_consumed"].tolist(),
+        rows=daily.to_dict("records"),
+    )
+
+
+# ==============================================================================
+# UPLOAD / DOWNLOAD
+# ==============================================================================
+@app.route("/upload", methods=["POST"])
+def upload():
+    if "file" not in request.files:
+        return redirect(request.referrer or url_for("index"))
+    file = request.files["file"]
+    if not file.filename.lower().endswith(".xlsx"):
+        return redirect(request.referrer or url_for("index"))
+
+    file.save(DATA_PATH)
+    _load_cached.cache_clear()  # Invalidate cache
+    return redirect(request.referrer or url_for("index"))
+
+
+@app.route("/download")
+def download():
+    if not os.path.exists(DATA_PATH):
+        abort(404)
+    return send_file(DATA_PATH, as_attachment=True)
+
+
+@app.route("/refresh")
+def refresh():
+    _load_cached.cache_clear()
+    return redirect(request.referrer or url_for("index"))
+
 
 if __name__ == "__main__":
     app.run(debug=os.environ.get("FLASK_DEBUG", "false").lower() == "true")

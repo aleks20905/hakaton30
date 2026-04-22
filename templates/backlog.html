@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}Backlog{% endblock %}
+{% block heading %}Backlog Analysis{% endblock %}
+{% block subtitle %}{{ total_orders }} orders · {{ "{:,.1f}".format(total_hours) }} total hours{% endblock %}
+
+{% block content %}
+<div class="chart-card" style="margin-bottom:20px;">
+    <div class="chart-header">
+        <h3>Backlog Hours by Due Month</h3>
+    </div>
+    <canvas id="backlogChart" style="max-height:400px;"></canvas>
+</div>
+
+<div class="table-card">
+    <div class="table-header">
+        <h3>Top 20 Orders by Labor Hours</h3>
+    </div>
+    <div class="table-wrapper">
+        <table>
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>Order #</th>
+                    <th>Item</th>
+                    <th>Description</th>
+                    <th>Family</th>
+                    <th>Due Date</th>
+                    <th>Qty</th>
+                    <th>Hours</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in top_orders %}
+                <tr>
+                    <td class="row-num">{{ loop.index }}</td>
+                    <td>{{ row.ordernumber or '—' }}</td>
+                    <td><strong>{{ row.item }}</strong></td>
+                    <td>{{ row.description or '—' }}</td>
+                    <td>{{ row.family_code or '—' }}</td>
+                    <td>{{ row.month_period or '—' }}</td>
+                    <td>{{ "{:,}".format(row.openorderqty|int) if row.openorderqty else '—' }}</td>
+                    <td>{{ "{:,.1f}".format(row.total_labor_hours) if row.total_labor_hours else '0' }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="8" class="empty">No backlog orders in range</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const grid = 'rgba(100,116,139,0.08)';
+const textColor = '#94a3b8';
+
+new Chart(document.getElementById('backlogChart'), {
+    type: 'bar',
+    data: {
+        labels: {{ months|tojson }},
+        datasets: [
+            { label:'Backlog Hours', data:{{ backlog_hours|tojson }}, backgroundColor:'#e74c3c', yAxisID:'y' },
+            { label:'Order Count',   data:{{ order_counts|tojson }},  backgroundColor:'#f59e0b', yAxisID:'y1', type:'line', borderColor:'#f59e0b', tension:0.3 }
+        ]
+    },
+    options: {
+        responsive:true,
+        scales: {
+            x:{ ticks:{color:textColor}, grid:{color:grid} },
+            y:{ ticks:{color:textColor}, grid:{color:grid}, title:{display:true,text:'Hours',color:textColor} },
+            y1:{ position:'right', ticks:{color:textColor}, grid:{display:false}, title:{display:true,text:'Orders',color:textColor} }
+        },
+        plugins: { legend:{ labels:{ color:textColor } } }
+    }
+});
+</script>
+{% endblock %}

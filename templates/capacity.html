@@ -1,0 +1,375 @@
+{% extends "base.html" %}
+{% block title %}Capacity{% endblock %}
+{% block heading %}Capacity Analysis{% endblock %}
+{% block subtitle %}Monthly efficiency trend{% endblock %}
+
+{% block content %}
+<div class="chart-card" style="margin-bottom:20px;">
+    <div class="chart-header">
+        <h3>Hours: Capacity vs Actual vs Committed</h3>
+    </div>
+    <canvas id="mainChart" style="max-height:400px;"></canvas>
+</div>
+
+<div class="charts-grid two-equal">
+    <div class="chart-card">
+        <div class="chart-header"><h3>Operational Efficiency %</h3></div>
+        <canvas id="effChart"></canvas>
+    </div>
+    <div class="chart-card">
+        <div class="chart-header"><h3>Total Load %</h3></div>
+        <canvas id="loadChart"></canvas>
+    </div>
+</div>
+
+<div class="chart-card" style="margin-top:20px; margin-bottom:20px;">
+    <div class="chart-header">
+        <h3>Capacity Fill Breakdown</h3>
+        <span class="chart-badge">How each month's capacity is allocated</span>
+    </div>
+    <canvas id="fillChart" style="max-height:320px;"></canvas>
+</div>
+
+<div class="chart-card" style="margin-top:20px; margin-bottom:20px;">
+    <div class="chart-header">
+        <h3>Rolling Trend — Hours Over Time</h3>
+        <span class="chart-badge">Smooth trend comparison</span>
+    </div>
+    <canvas id="trendChart" style="max-height:320px;"></canvas>
+</div>
+
+<div class="table-card" style="margin-top:20px;">
+    <div class="table-header">
+        <h3>Monthly Breakdown</h3>
+        <span class="record-count">{{ rollup|length }} months</span>
+    </div>
+    <div class="table-wrapper">
+        <table>
+            <thead>
+                <tr>
+                    <th>Month</th>
+                    <th>Capacity</th>
+                    <th>Actual</th>
+                    <th>Backlog</th>
+                    <th>Forecast</th>
+                    <th>Op Eff %</th>
+                    <th>Load %</th>
+                    <th>Drill-down</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for r in rollup %}
+                <tr>
+                    <td><strong>{{ r.month_period }}</strong></td>
+                    <td>{{ "{:,.1f}".format(r.capacity_hours) }}</td>
+                    <td>{{ "{:,.1f}".format(r.actual_hours) }}</td>
+                    <td>{{ "{:,.1f}".format(r.backlog_hours) }}</td>
+                    <td>{{ "{:,.1f}".format(r.forecast_hours) }}</td>
+                    <td>
+                        <span class="kpi-tag {{ 'positive' if r.operational_efficiency >= 80 else 'warning' if r.operational_efficiency >= 50 else 'negative' }}">
+                            {{ r.operational_efficiency }}%
+                        </span>
+                    </td>
+                    <td>
+                        <span class="kpi-tag {{ 'negative' if r.load_ratio >= 100 else 'warning' if r.load_ratio >= 80 else 'positive' }}">
+                            {{ r.load_ratio }}%
+                        </span>
+                    </td>
+                    <td><a href="/daily/{{ r.month_period }}?{{ filter_query }}" class="btn-link">View Days →</a></td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const grid      = 'rgba(100,116,139,0.08)';
+const textColor = '#94a3b8';
+const labels    = {{ months | tojson }};
+const sc = {
+    x: { ticks:{ color:textColor }, grid:{ color:grid } },
+    y: { ticks:{ color:textColor }, grid:{ color:grid } }
+};
+
+// ── Chart 1: Capacity vs Actual vs Committed ─────────────────────────────────
+new Chart(document.getElementById('mainChart'), {
+    type: 'bar',
+    data: {
+        labels,
+        datasets: [
+            { label:'Capacity', data:{{ capacity_hours|tojson }}, backgroundColor:'#95a5a6' },
+            { label:'Actual',   data:{{ actual_hours|tojson }},   backgroundColor:'#27ae60' },
+            { label:'Backlog',  data:{{ backlog_hours|tojson }},  backgroundColor:'#e74c3c' },
+            { label:'Forecast', data:{{ forecast_hours|tojson }}, backgroundColor:'#3498db' },
+        ]
+    },
+    options: {
+        responsive: true,
+        scales: sc,
+        plugins: { legend: { labels: { color:textColor } } }
+    }
+});
+
+// ── Chart 2: Op Efficiency % ─────────────────────────────────────────────────
+new Chart(document.getElementById('effChart'), {
+    type: 'line',
+    data: {
+        labels,
+        datasets: [
+            {
+                label: 'Op Eff %',
+                data: {{ op_eff|tojson }},
+                borderColor: '#27ae60',
+                backgroundColor: 'rgba(39,174,96,0.1)',
+                fill: true,
+                tension: 0.3,
+                pointRadius: 4,
+                pointBackgroundColor: '#27ae60',
+            },
+            {
+                label: 'Target (95%)',
+                data: Array(labels.length).fill(95),
+                borderColor: '#f59e0b',
+                borderDash: [6, 3],
+                borderWidth: 1.5,
+                pointRadius: 0,
+                fill: false,
+                tension: 0,
+            }
+        ]
+    },
+    options: {
+        responsive: true,
+        scales: {
+            x: { ticks:{ color:textColor }, grid:{ color:grid } },
+            y: {
+                ticks:{ color:textColor, callback: v => v + '%' },
+                grid:{ color:grid },
+                min: 0,
+            }
+        },
+        plugins: {
+            legend: { labels: { color:textColor } },
+            tooltip: {
+                callbacks: {
+                    label: ctx => {
+                        if (ctx.datasetIndex === 1) return null;
+                        const v = ctx.parsed.y;
+                        return ` Op Eff: ${v}%  ${v >= 95 ? '✓ On target' : '✗ Below target'}`;
+                    }
+                }
+            }
+        }
+    }
+});
+// ── Chart 3: Load % ──────────────────────────────────────────────────────────
+new Chart(document.getElementById('loadChart'), {
+    type: 'line',
+    data: {
+        labels,
+        datasets: [{
+            label: 'Load %',
+            data: {{ load_ratio|tojson }},
+            borderColor: '#e74c3c',
+            backgroundColor: 'rgba(231,76,60,0.1)',
+            fill: true,
+            tension: 0.3
+        }]
+    },
+    options: {
+        responsive: true,
+        scales: sc,
+        plugins: { legend: { labels: { color:textColor } } }
+    }
+});
+
+// ── Chart 4: Capacity Fill Breakdown (horizontal stacked + free space) ───────
+const capHours      = {{ capacity_hours | tojson }};
+const actualHours   = {{ actual_hours   | tojson }};
+const backlogHours  = {{ backlog_hours  | tojson }};
+const forecastHours = {{ forecast_hours | tojson }};
+
+function toPct(arr) {
+    return arr.map((v, i) => capHours[i] > 0 ? parseFloat((v / capHours[i] * 100).toFixed(1)) : 0);
+}
+
+const actualPct   = toPct(actualHours);
+const backlogPct  = toPct(backlogHours);
+const forecastPct = toPct(forecastHours);
+
+const freePct = capHours.map((_, i) => {
+    const used = actualPct[i] + backlogPct[i] + forecastPct[i];
+    return parseFloat(Math.max(0, 100 - used).toFixed(1));
+});
+
+new Chart(document.getElementById('fillChart'), {
+    type: 'bar',
+    data: {
+        labels,
+        datasets: [
+            {
+                label: 'Actual Consumed',
+                data: actualPct,
+                backgroundColor: '#27ae60',
+                stack: 'fill',
+            },
+            {
+                label: 'Backlog Committed',
+                data: backlogPct,
+                backgroundColor: '#e74c3c',
+                stack: 'fill',
+            },
+            {
+                label: 'Forecast Planned',
+                data: forecastPct,
+                backgroundColor: '#3498db',
+                stack: 'fill',
+            },
+            {
+                label: 'Free Capacity',
+                data: freePct,
+                backgroundColor: 'rgba(148,163,184,0.2)',
+                stack: 'fill',
+            },
+        ]
+    },
+    options: {
+        indexAxis: 'y',
+        responsive: true,
+        interaction: { mode: 'index', intersect: false },
+        scales: {
+            x: {
+                stacked: true,
+                max: 100,
+                ticks: {
+                    color: textColor,
+                    callback: v => v + '%'
+                },
+                grid: { color: grid },
+                title: { display: true, text: '% of Capacity', color: textColor }
+            },
+            y: {
+                stacked: true,
+                ticks: { color: textColor },
+                grid: { color: grid }
+            }
+        },
+        plugins: {
+            legend: { labels: { color: textColor } },
+            tooltip: {
+                callbacks: {
+                    label: ctx => {
+                        const i = ctx.dataIndex;
+                        const hrs = [actualHours, backlogHours, forecastHours,
+                                     freePct.map((p, j) => capHours[j] * p / 100)][ctx.datasetIndex][i];
+                        return ` ${ctx.dataset.label}: ${ctx.parsed.x}%  (${typeof hrs === 'number' ? hrs.toFixed(1) : '—'} hrs)`;
+                    }
+                }
+            }
+        }
+    }
+});
+
+// ── Chart 5: Rolling Trend — Hours Over Time 
+new Chart(document.getElementById('trendChart'), {
+    type: 'line',
+    data: {
+        labels,
+        datasets: [
+            {
+                label: 'Capacity',
+                data: capHours,
+                borderColor: '#95a5a6',
+                backgroundColor: 'transparent',
+                borderWidth: 2,
+                borderDash: [6, 3],
+                pointRadius: 3,
+                tension: 0.4,
+            },
+            {
+                label: 'Actual',
+                data: actualHours,
+                borderColor: '#27ae60',
+                backgroundColor: 'rgba(39,174,96,0.08)',
+                borderWidth: 2.5,
+                fill: true,
+                pointRadius: 4,
+                tension: 0.4,
+            },
+            {
+                label: 'Backlog',
+                data: backlogHours,
+                borderColor: '#e74c3c',
+                backgroundColor: 'rgba(231,76,60,0.08)',
+                borderWidth: 2.5,
+                fill: true,
+                pointRadius: 4,
+                tension: 0.4,
+            },
+            {
+                label: 'Forecast',
+                data: forecastHours,
+                borderColor: '#3498db',
+                backgroundColor: 'rgba(52,152,219,0.08)',
+                borderWidth: 2.5,
+                fill: true,
+                pointRadius: 4,
+                tension: 0.4,
+            },
+            {
+                label: 'Op Efficiency %',
+                data: {{ op_eff | tojson }},
+                borderColor: '#f59e0b',
+                backgroundColor: 'transparent',
+                borderWidth: 2,
+                pointRadius: 4,
+                tension: 0.4,
+                yAxisID: 'y1',
+                fill: false,
+            }
+        ]
+    },
+    options: {
+        responsive: true,
+        interaction: { mode: 'index', intersect: false },
+        scales: {
+            x: {
+                ticks: { color: textColor },
+                grid:  { color: grid }
+            },
+            y: {
+                ticks: { color: textColor },
+                grid:  { color: grid },
+                title: { display: true, text: 'Hours', color: textColor },
+                min: 0
+            },
+            y1: {
+                position: 'right',
+                ticks: { color: '#f59e0b', callback: v => v + '%' },
+                grid:  { display: false },
+                title: { display: true, text: 'Efficiency %', color: '#f59e0b' },
+                min: 0,
+                max: 150
+            }
+        },
+        plugins: {
+            legend: { labels: { color: textColor } },
+            tooltip: {
+                callbacks: {
+                    label: ctx => {
+                        if (ctx.dataset.yAxisID === 'y1')
+                            return ` ${ctx.dataset.label}: ${ctx.parsed.y}%`;
+                        return ` ${ctx.dataset.label}: ${ctx.parsed.y.toFixed(1)} hrs`;
+                    }
+                }
+            }
+        }
+    }
+});
+
+
+</script>
+{% endblock %}

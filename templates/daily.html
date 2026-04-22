@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+{% block title %}Daily — {{ month }}{% endblock %}
+{% block heading %}Daily Breakdown{% endblock %}
+{% block subtitle %}{{ month }} — production by day{% endblock %}
+
+{% block filters %}
+<div class="filter-bar">
+    <a href="/capacity?{{ filter_query }}" class="btn-apply">← Back to Capacity</a>
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="chart-card" style="margin-bottom:20px;">
+    <div class="chart-header">
+        <h3>Daily Production — {{ month }}</h3>
+    </div>
+    <canvas id="dailyChart" style="max-height:400px;"></canvas>
+</div>
+
+<div class="table-card">
+    <div class="table-header">
+        <h3>Daily Detail</h3>
+        <span class="record-count">{{ rows|length }} days</span>
+    </div>
+    <div class="table-wrapper">
+        <table>
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>Date</th>
+                    <th>Quantity</th>
+                    <th>Hours Consumed</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for r in rows %}
+                <tr>
+                    <td class="row-num">{{ loop.index }}</td>
+                    <td><strong>{{ r.date }}</strong></td>
+                    <td>{{ "{:,}".format(r.quantity|int) }}</td>
+                    <td>{{ "{:,.1f}".format(r.hours_consumed) }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="4" class="empty">No production recorded for {{ month }}</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const grid = 'rgba(100,116,139,0.08)';
+const textColor = '#94a3b8';
+
+const rawQty   = {{ quantities | tojson }};
+const rawHours = {{ hours      | tojson }};
+
+new Chart(document.getElementById('dailyChart'), {
+    type: 'bar',
+    data: {
+        labels: {{ dates | tojson }},
+        datasets: [
+            {
+                label: 'Quantity',
+                data: rawQty,
+                backgroundColor: 'rgba(39,174,96,0.75)',
+                borderColor: '#27ae60',
+                borderWidth: 1,
+                borderRadius: 4,
+                yAxisID: 'y',
+            },
+            {
+                label: 'Hours Consumed',
+                data: rawHours,
+                backgroundColor: 'rgba(52,152,219,0.75)',
+                borderColor: '#3498db',
+                borderWidth: 1,
+                borderRadius: 4,
+                yAxisID: 'y1',
+            }
+        ]
+    },
+    options: {
+        responsive: true,
+        interaction: { mode: 'index', intersect: false },
+        scales: {
+            x: {
+                ticks: { color: textColor, maxRotation: 45 },
+                grid:  { color: grid }
+            },
+            y: {
+                position: 'left',
+                ticks: { color: '#27ae60' },
+                grid:  { color: grid },
+                title: { display: true, text: 'Quantity', color: '#27ae60' },
+                beginAtZero: true,
+            },
+            y1: {
+                position: 'right',
+                ticks: { color: '#3498db' },
+                grid:  { display: false },
+                title: { display: true, text: 'Hours', color: '#3498db' },
+                beginAtZero: true,
+            }
+        },
+        plugins: {
+            legend: { labels: { color: textColor } },
+            tooltip: {
+                callbacks: {
+                    label: ctx => {
+                        if (ctx.datasetIndex === 0)
+                            return ` Quantity: ${ctx.parsed.y.toLocaleString()}`;
+                        return ` Hours: ${ctx.parsed.y.toFixed(1)} hrs`;
+                    }
+                }
+            }
+        }
+    }
+});
+</script>
+{% endblock %}

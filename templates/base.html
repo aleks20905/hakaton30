@@ -3,58 +3,86 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Curtis</title>
-    <link rel="stylesheet" href="/static/css/style.css">
+    <title>{% block title %}Production Analytics{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
 </head>
 <body>
 
-<!-- SIDEBAR -->
 <aside class="sidebar">
     <div class="sidebar-header">
         <div class="logo">
-            <img src="{{ url_for('static', filename='logo.png') }}" alt="Logo" 
-                 style="width:100%; height:auto; object-fit:contain;">
+            <img src="{{ url_for('static', filename='logo.png') }}" alt="Logo"
+                 style="width:100%; height:auto; object-fit:contain;"
+                 onerror="this.style.display='none'">
         </div>
     </div>
-    
+
     <nav class="sidebar-nav">
         <a href="/?{{ filter_query }}" class="nav-item {{ 'active' if page == 'dashboard' }}">
-            <span class="nav-icon">📊</span> Dashboard
+            <i class="bi bi-speedometer2"></i> Dashboard
         </a>
-        <a href="/records?{{ filter_query }}" class="nav-item {{ 'active' if page == 'records' }}">
-            <span class="nav-icon">📋</span> Records
+        <a href="/capacity?{{ filter_query }}" class="nav-item {{ 'active' if page == 'capacity' }}">
+            <i class="bi bi-bar-chart-line"></i> Capacity
         </a>
-        <a href="/analytics?{{ filter_query }}" class="nav-item {{ 'active' if page == 'analytics' }}">
-            <span class="nav-icon">📈</span> Analytics
+        <a href="/backlog?{{ filter_query }}" class="nav-item {{ 'active' if page == 'backlog' }}">
+            <i class="bi bi-clipboard-data"></i> Backlog
+        </a>
+        <a href="/forecast?{{ filter_query }}" class="nav-item {{ 'active' if page == 'forecast' }}">
+            <i class="bi bi-graph-up-arrow"></i> Forecast
         </a>
     </nav>
 
+    <div class="sidebar-footer">
+        <a href="/download" class="action-btn">
+            <i class="bi bi-download"></i> Download
+        </a>
+        <form action="/upload" method="POST" enctype="multipart/form-data">
+            <label class="action-btn upload-btn">
+                <i class="bi bi-upload"></i> Upload
+                <input type="file" name="file" accept=".xlsx" hidden onchange="this.form.submit()">
+            </label>
+        </form>
+        <a href="/refresh" class="action-btn" title="Reload data file">
+            <i class="bi bi-arrow-clockwise"></i> Refresh
+        </a>
+    </div>
 </aside>
 
-<!-- MAIN -->
 <main class="main-content">
-    <!-- TOP BAR -->
-    <div class="top-bar">
-        <div class="top-bar-left">
-            <h1 class="page-title">{% block title %}Dashboard{% endblock %}</h1>
-            <p class="page-subtitle">{% block subtitle %}Overview{% endblock %}</p>
+    <header class="page-header">
+        <div>
+            <h1>{% block heading %}Production Analytics{% endblock %}</h1>
+            <p class="page-subtitle">{% block subtitle %}{% endblock %}</p>
         </div>
-        <div class="top-bar-right">
-            {% include "components/range_selector.html" %}
-        </div>
-    </div>
+        {% block filters %}
+        <form method="GET" class="filter-bar">
+            <select name="quick" onchange="this.form.submit()">
+                <option value="">Custom Range</option>
+                <option value="this_month"   {{ 'selected' if params.quick == 'this_month' }}>This Month</option>
+                <option value="last_3"       {{ 'selected' if params.quick == 'last_3' }}>Last 3 Months</option>
+                <option value="ytd"          {{ 'selected' if params.quick == 'ytd' }}>Year to Date</option>
+                <option value="next_3"       {{ 'selected' if params.quick == 'next_3' }}>Next 3 Months</option>
+                <option value="next_6"       {{ 'selected' if params.quick == 'next_6' }}>Next 6 Months</option>
+            </select>
+            <input type="month" name="start_month" value="{{ params.start_month }}">
+            <span>to</span>
+            <input type="month" name="end_month" value="{{ params.end_month }}">
+            <select name="family">
+                <option value="all">All Families</option>
+                {% for f in options.families %}
+                    <option value="{{ f }}" {{ 'selected' if params.family == f }}>{{ f }}</option>
+                {% endfor %}
+            </select>
+            <button type="submit" class="btn-apply">Apply</button>
+        </form>
+        {% endblock %}
+    </header>
 
-    <!-- FILTERS BAR -->
-    <div class="filters-bar">
-        {% include "components/filters.html" %}
-    </div>
-
-    <!-- CONTENT -->
-    <div class="content">
-        {% block content %}{% endblock %}
-    </div>
+    {% block content %}{% endblock %}
 </main>
 
 {% block scripts %}{% endblock %}

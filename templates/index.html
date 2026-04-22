@@ -1,96 +1,50 @@
 {% extends "base.html" %}
 {% block title %}Dashboard{% endblock %}
-{% block subtitle %}Production overview{% endblock %}
+{% block heading %}Executive Summary{% endblock %}
+{% block subtitle %}Current month: {{ kpis.month }}{% endblock %}
 
 {% block content %}
-<!-- PRIMARY KPIs -->
+
+<!-- KPI GRID -->
 <div class="kpi-grid">
     <div class="kpi-card">
-        <div class="kpi-header">
-            <span class="kpi-label">Total Planned</span>
-        </div>
-        <div class="kpi-value">{{ "{:,}".format(total_planned) }}</div>
-        <div class="kpi-footer">
-            <span class="kpi-tag neutral">units</span>
-        </div>
-    </div>
-    <div class="kpi-card">
-        <div class="kpi-header">
-            <span class="kpi-label">Total Actual</span>
-        </div>
-        <div class="kpi-value">{{ "{:,}".format(total_actual) }}</div>
-        <div class="kpi-footer">
-            {% set gap = total_actual - total_planned %}
-            <span class="kpi-tag {{ 'positive' if gap >= 0 else 'negative' }}">
-                {{ '+' if gap > 0 }}{{ "{:,}".format(gap) }} gap
-            </span>
-        </div>
-    </div>
-    <div class="kpi-card">
-        <div class="kpi-header">
-            <span class="kpi-label">Efficiency</span>
-           
-        </div>
-        <div class="kpi-value">{{ overall_eff }}%</div>
+        <div class="kpi-header"><span class="kpi-label">Operational Efficiency</span></div>
+        <div class="kpi-value">{{ kpis.operational_efficiency }}%</div>
         <div class="progress-bar">
-            <div class="progress-fill {{ 'good' if overall_eff >= 95 else 'fair' if overall_eff >= 85 else 'poor' }}" style="width: {{ [overall_eff, 100] | min }}%"></div>
+            <div class="progress-fill {{ 'good' if kpis.operational_efficiency >= 80 else 'fair' if kpis.operational_efficiency >= 50 else 'poor' }}"
+                 style="width: {{ [kpis.operational_efficiency, 100]|min }}%"></div>
         </div>
-    </div>
-    <div class="kpi-card">
-        <div class="kpi-header">
-            <span class="kpi-label">Total Defects</span>
-
-        </div>
-        <div class="kpi-value">{{ "{:,}".format(total_defects) }}</div>
         <div class="kpi-footer">
-            <span class="kpi-tag {{ 'positive' if overall_fpy >= 95 else 'warning' if overall_fpy >= 90 else 'negative' }}">
-                {{ overall_fpy }}% FPY
-            </span>
+            <span class="kpi-tag neutral">{{ kpis.actual_hours }} / {{ kpis.capacity_hours }} hrs</span>
         </div>
     </div>
-</div>
 
-<!-- SECONDARY KPIs -->
-<div class="kpi-grid kpi-secondary">
     <div class="kpi-card">
-        <div class="kpi-header">
-            <span class="kpi-label">First Pass Yield</span>
-        </div>
-        <div class="kpi-value">{{ overall_fpy }}%</div>
+        <div class="kpi-header"><span class="kpi-label">Total Load</span></div>
+        <div class="kpi-value">{{ kpis.load_ratio }}%</div>
         <div class="progress-bar">
-            <div class="progress-fill {{ 'good' if overall_fpy >= 95 else 'fair' if overall_fpy >= 90 else 'poor' }}" style="width: {{ overall_fpy }}%"></div>
+            <div class="progress-fill {{ 'poor' if kpis.load_ratio >= 100 else 'fair' if kpis.load_ratio >= 80 else 'good' }}"
+                 style="width: {{ [kpis.load_ratio, 100]|min }}%"></div>
+        </div>
+        <div class="kpi-footer">
+            <span class="kpi-tag neutral">Backlog + Forecast</span>
         </div>
     </div>
+
     <div class="kpi-card">
-        <div class="kpi-header">
-            <span class="kpi-label">UPLH (Units/Labor Hr)</span>
-        </div>
-        <div class="kpi-value">{{ overall_uplh }}</div>
+        <div class="kpi-header"><span class="kpi-label">Backlog Orders</span></div>
+        <div class="kpi-value">{{ kpis.backlog_order_count }}</div>
         <div class="kpi-footer">
-            <span class="kpi-tag {{ 'positive' if overall_uplh >= 3 else 'warning' if overall_uplh >= 2 else 'negative' }}">
-                {{ 'Excellent' if overall_uplh >= 3 else 'Good' if overall_uplh >= 2 else 'Below Target' }}
-            </span>
+            <span class="kpi-tag warning">{{ kpis.backlog_hours }} hrs committed</span>
         </div>
     </div>
+
     <div class="kpi-card">
-        <div class="kpi-header">
-            <span class="kpi-label">Production Days</span>
-           
-        </div>
-        <div class="kpi-value">{{ status_counts.get('Production', 0) // 2 }}</div>
+        <div class="kpi-header"><span class="kpi-label">Forecast Variance</span></div>
+        <div class="kpi-value">{{ kpis.forecast_variance_pct }}%</div>
         <div class="kpi-footer">
-            <span class="kpi-tag neutral">days active</span>
-        </div>
-    </div>
-    <div class="kpi-card">
-        <div class="kpi-header">
-            <span class="kpi-label">Downtime</span>
-            
-        </div>
-        <div class="kpi-value">{{ (status_counts.get('Maintenance', 0) + status_counts.get('Holiday', 0)) // 2 }}</div>
-        <div class="kpi-footer">
-            <span class="kpi-tag warning">
-                {{ status_counts.get('Maintenance', 0) // 2 }}  · {{ status_counts.get('Holiday', 0) // 2 }}
+            <span class="kpi-tag {{ 'positive' if kpis.forecast_variance_pct >= 0 else 'negative' }}">
+                {{ 'Above' if kpis.forecast_variance_pct >= 0 else 'Below' }} plan
             </span>
         </div>
     </div>
@@ -100,108 +54,213 @@
 <div class="charts-grid">
     <div class="chart-card">
         <div class="chart-header">
-            <h3>Planned vs Actual</h3>
-            <span class="chart-badge">{{ params.range_type | capitalize }}</span>
+            <h3>Capacity vs Consumption</h3>
+            <span class="chart-badge">{{ params.start_month }} → {{ params.end_month }}</span>
         </div>
-        <canvas id="prodChart"></canvas>
+        <canvas id="capacityChart"></canvas>
     </div>
+
     <div class="chart-card">
         <div class="chart-header">
-            <h3>  Defects</h3>
-            <span class="chart-badge">per period</span>
+            <h3>Family Mix</h3>
+            <span class="chart-badge">Hours consumed</span>
         </div>
-        <canvas id="defectChart"></canvas>
+        <canvas id="familyChart"></canvas>
     </div>
 </div>
 
-<!-- CHARTS ROW 2 -->
-<div class="charts-grid two-equal">
-    <div class="chart-card">
-        <div class="chart-header">
-            <h3>  FPY & Efficiency</h3>
-            <span class="chart-badge">% — green line = 95% target</span>
-        </div>
-        <canvas id="fpyEffChart"></canvas>
+<!-- CHARTS ROW 2 — Load Pressure -->
+<div class="chart-card" style="margin-bottom: 20px;">
+    <div class="chart-header">
+        <h3>Load Pressure Over Time</h3>
+        <span class="chart-badge">Backlog vs Forecast vs Available Capacity</span>
     </div>
-    <div class="chart-card">
-        <div class="chart-header">
-            <h3> UPLH (Units per Labor Hour)</h3>
-            <span class="chart-badge">green line = 3.0 target</span>
-        </div>
-        <canvas id="uplhChart"></canvas>
+    <canvas id="loadChart" style="max-height: 280px;"></canvas>
+</div>
+
+
+<!-- TOP ITEMS TABLE -->
+<div class="table-card">
+    <div class="table-header">
+        <h3>Top 10 Items Produced</h3>
+        <span class="record-count">{{ top_items|length }} items</span>
+    </div>
+    <div class="table-wrapper">
+        <table>
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>Item</th>
+                    <th>Description</th>
+                    <th>Quantity</th>
+                    <th>Hours</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in top_items %}
+                <tr>
+                    <td class="row-num">{{ loop.index }}</td>
+                    <td><strong>{{ row.item }}</strong></td>
+                    <td>{{ row.description or '—' }}</td>
+                    <td>{{ "{:,}".format(row.quantity|int) }}</td>
+                    <td>{{ "{:,.1f}".format(row.hours) }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="5" class="empty">No production data in range</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
     </div>
 </div>
+
 {% endblock %}
 
 {% block scripts %}
 <script>
-const labels = {{ dates | tojson }};
-const showDots = labels.length <= 30;
-const pR = showDots ? 3 : 0;
-const pHR = showDots ? 5 : 3;
 const grid = 'rgba(100,116,139,0.08)';
-const sc = {
-    x: { ticks: { color: '#64748b', font: { size: 10 }, maxRotation: 45 }, grid: { color: grid } },
-    y: { ticks: { color: '#64748b', font: { size: 11 } }, grid: { color: grid } }
-};
+const textColor = '#94a3b8';
+const months = {{ months | tojson }};
 
-// Planned vs Actual
-new Chart(document.getElementById('prodChart'), {
-    type: 'line',
-    data: {
-        labels,
-        datasets: [
-            { label: 'Actual', data: {{ actuals | tojson }}, borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.1)', fill: true, tension: 0.3, borderWidth: 2, pointRadius: pR, pointHoverRadius: pHR },
-            { label: 'Planned', data: {{ planned_list | tojson }}, borderColor: '#6366f1', borderDash: [6,3], tension: 0.3, borderWidth: 2, pointRadius: pR, pointHoverRadius: pHR }
-        ]
-    },
-    options: { responsive: true, scales: sc, plugins: { legend: { labels: { color: '#94a3b8' } } } }
-});
-
-// Defects
-new Chart(document.getElementById('defectChart'), {
+// ── Chart 1: Capacity vs Consumption ────────────────────────────────────────
+new Chart(document.getElementById('capacityChart'), {
     type: 'bar',
     data: {
-        labels,
-        datasets: [{ label: 'Defects', data: {{ defects | tojson }},
-            backgroundColor: {{ defects | tojson }}.map(v => v > 30 ? 'rgba(239,68,68,0.7)' : v > 15 ? 'rgba(245,158,11,0.7)' : 'rgba(16,185,129,0.7)'),
-            borderRadius: 4 }]
-    },
-    options: { responsive: true, scales: sc, plugins: { legend: { display: false } } }
-});
-
-// FPY + Efficiency + 95% target line
-new Chart(document.getElementById('fpyEffChart'), {
-    type: 'line',
-    data: {
-        labels,
+        labels: months,
         datasets: [
-            { label: 'FPY %', data: {{ fpy_list | tojson }}, borderColor: '#a855f7', backgroundColor: 'rgba(168,85,247,0.08)', fill: true, tension: 0.3, borderWidth: 2, pointRadius: pR, pointHoverRadius: pHR },
-            { label: 'Efficiency %', data: {{ eff_list | tojson }}, borderColor: '#6366f1', tension: 0.3, borderWidth: 2, borderDash: [4,2], pointRadius: pR, pointHoverRadius: pHR },
-            { label: '95% Target', data: labels.map(() => 95), borderColor: '#10b981', borderWidth: 2, borderDash: [10,5], pointRadius: 0, pointHoverRadius: 0, fill: false }
+            { label: 'Capacity', data: {{ capacity_hours | tojson }}, backgroundColor: '#95a5a6', order: 3 },
+            { label: 'Actual',   data: {{ actual_hours   | tojson }}, backgroundColor: '#27ae60', order: 2 },
+            { label: 'Backlog',  data: {{ backlog_hours  | tojson }}, backgroundColor: '#e74c3c', order: 2 },
+            { label: 'Forecast', data: {{ forecast_hours | tojson }}, backgroundColor: '#3498db', order: 2 },
+            {
+                label: 'Op Efficiency %',
+                data: {{ op_eff | tojson }},
+                type: 'line',
+                borderColor: '#f59e0b',
+                backgroundColor: '#f59e0b',
+                yAxisID: 'y1',
+                tension: 0.3,
+                order: 1,
+            }
         ]
     },
     options: {
         responsive: true,
-        scales: { ...sc, y: { ...sc.y, min: 60, max: 105, ticks: { ...sc.y.ticks, callback: v => v + '%' } } },
-        plugins: { legend: { labels: { color: '#94a3b8' } } }
+        interaction: { mode: 'index', intersect: false },
+        scales: {
+            x:  { ticks: { color: textColor }, grid: { color: grid } },
+            y:  { ticks: { color: textColor }, grid: { color: grid }, title: { display: true, text: 'Hours', color: textColor } },
+            y1: { position: 'right', ticks: { color: textColor, callback: v => v + '%' }, grid: { display: false }, min: 0, max: 150 }
+        },
+        plugins: { legend: { labels: { color: textColor } } }
     }
 });
 
-// UPLH + 3.0 target line
-new Chart(document.getElementById('uplhChart'), {
+// ── Chart 2: Family Mix Doughnut ─────────────────────────────────────────────
+const famData = {{ family_mix | tojson }};
+new Chart(document.getElementById('familyChart'), {
+    type: 'doughnut',
+    data: {
+        labels: famData.map(d => d.family_code),
+        datasets: [{
+            data: famData.map(d => d.hours),
+            backgroundColor: ['#3498db','#27ae60','#e74c3c','#f59e0b','#9b59b6','#1abc9c','#e67e22','#34495e']
+        }]
+    },
+    options: {
+        responsive: true,
+        plugins: {
+            legend: { position: 'right', labels: { color: textColor, font: { size: 11 } } },
+            tooltip: { callbacks: { label: ctx => `${ctx.label}: ${ctx.parsed.toFixed(1)} hrs (${famData[ctx.dataIndex].pct}%)` } }
+        }
+    }
+});
+
+// ── Chart 3: Load Pressure — stacked area ────────────────────────────────────
+const capHours      = {{ capacity_hours | tojson }};
+const backlogHours  = {{ backlog_hours  | tojson }};
+const forecastHours = {{ forecast_hours | tojson }};
+
+// Available = capacity - actual (remaining room)
+const actualHours   = {{ actual_hours | tojson }};
+const remaining     = capHours.map((c, i) => Math.max(0, c - actualHours[i]));
+
+new Chart(document.getElementById('loadChart'), {
     type: 'line',
     data: {
-        labels,
+        labels: months,
         datasets: [
-            { label: 'UPLH', data: {{ uplh_list | tojson }}, borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.08)', fill: true, tension: 0.3, borderWidth: 2, pointRadius: pR, pointHoverRadius: pHR },
-            { label: '3.0 Target', data: labels.map(() => 3.0), borderColor: '#10b981', borderWidth: 2, borderDash: [10,5], pointRadius: 0, pointHoverRadius: 0, fill: false }
+            {
+                label: 'Remaining Capacity',
+                data: remaining,
+                borderColor: '#27ae60',
+                backgroundColor: 'rgba(39,174,96,0.15)',
+                fill: true,
+                tension: 0.3,
+                borderWidth: 2,
+                pointRadius: 4,
+            },
+            {
+                label: 'Forecast Load',
+                data: forecastHours,
+                borderColor: '#3498db',
+                backgroundColor: 'rgba(52,152,219,0.12)',
+                fill: true,
+                tension: 0.3,
+                borderWidth: 2,
+                pointRadius: 4,
+            },
+            {
+                label: 'Backlog Load',
+                data: backlogHours,
+                borderColor: '#e74c3c',
+                backgroundColor: 'rgba(231,76,60,0.12)',
+                fill: true,
+                tension: 0.3,
+                borderWidth: 2,
+                pointRadius: 4,
+            },
+            {
+                // Flat reference line at total capacity
+                label: 'Total Capacity',
+                data: capHours,
+                borderColor: '#94a3b8',
+                backgroundColor: 'transparent',
+                borderDash: [6, 3],
+                borderWidth: 1.5,
+                pointRadius: 0,
+                fill: false,
+                tension: 0,
+            }
         ]
     },
     options: {
         responsive: true,
-        scales: { ...sc, y: { ...sc.y, min: 0, max: 5, ticks: { ...sc.y.ticks, stepSize: 0.5 } } },
-        plugins: { legend: { labels: { color: '#94a3b8' } } }
+        interaction: { mode: 'index', intersect: false },
+        scales: {
+            x: {
+                ticks: { color: textColor },
+                grid:  { color: grid }
+            },
+            y: {
+                ticks: { color: textColor },
+                grid:  { color: grid },
+                title: { display: true, text: 'Hours', color: textColor },
+                min: 0
+            }
+        },
+        plugins: {
+            legend: { labels: { color: textColor } },
+            tooltip: {
+                callbacks: {
+                    afterBody: (items) => {
+                        const i     = items[0].dataIndex;
+                        const total = backlogHours[i] + forecastHours[i];
+                        const pct   = capHours[i] > 0 ? ((total / capHours[i]) * 100).toFixed(1) : '—';
+                        return [`─────────────`, `Total load: ${total.toFixed(1)} hrs (${pct}% of cap)`];
+                    }
+                }
+            }
+        }
     }
 });
 </script>
