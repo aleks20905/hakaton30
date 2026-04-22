@@ -18,7 +18,7 @@
 
         installPhase = ''
           mkdir -p $out
-          cp app.py $out/
+          cp app.py analytics.py $out/
           cp -r templates $out/
           cp -r static $out/
         '';
@@ -36,7 +36,7 @@
         ];
         shellHook = ''
           echo "✅ Curtis Dashboard dev environment ready"
-          echo "Run: python app.py"
+          echo FLASK_DEBUG=true python app.py
         '';
       };
 
