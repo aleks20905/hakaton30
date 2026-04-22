@@ -18,7 +18,7 @@
 
         installPhase = ''
           mkdir -p $out
-          cp app.py analytics.py $out/
+          cp app.py analytics_helpers.py $out/
           cp -r templates $out/
           cp -r static $out/
         '';
