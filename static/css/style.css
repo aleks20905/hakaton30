@@ -419,3 +419,31 @@ tbody tr:hover { background: rgba(51, 65, 85, 0.3); }
     .main-content { padding: 20px 16px; }
     .page-header { flex-direction: column; align-items: stretch; }
 }
+.row-moved { background: rgba(39, 174, 96, 0.08); }
+
+.badge-moved {
+    display: inline-block;
+    margin-left: 0.4rem;
+    padding: 0.1rem 0.4rem;
+    font-size: 0.75rem;
+    color: #27ae60;
+    background: rgba(39, 174, 96, 0.15);
+    border-radius: 3px;
+}
+
+.inline-form {
+    display: flex;
+    gap: 0.3rem;
+    align-items: center;
+}
+
+.btn-small {
+    padding: 0.25rem 0.6rem;
+    font-size: 0.8rem;
+}
+
+.chart-container {
+    position: relative;
+    height: 400px;
+    padding: 1rem;
+}

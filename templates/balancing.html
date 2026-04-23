@@ -1,0 +1,498 @@
+{% extends "base.html" %}
+{% block title %}Forcast Balancing{% endblock %}
+{% block heading %}Backlog Pull-Forward{% endblock %}
+{% block subtitle %}Move backlog orders to earlier months to smooth load. Due dates are never exceeded.{% endblock %}
+
+{% block content %}
+
+<style>
+.kanban-card:active { cursor: grabbing; }
+.kanban-col.drag-over { outline: 2px solid #3b82f6; }
+</style>
+
+
+// ── MODE + AUTO CONTROLS ─────────────────────────────────────────────────
+<div class="filter-bar">
+    <form method="GET" action="/balancing" class="filter-form">
+        <input type="hidden" name="moves" value="{{ moves_str }}">
+        {% if params.family %}<input type="hidden" name="family" value="{{ params.family }}">{% endif %}
+        {% if params.start_month %}<input type="hidden" name="start_month" value="{{ params.start_month }}">{% endif %}
+        {% if params.end_month %}<input type="hidden" name="end_month" value="{{ params.end_month }}">{% endif %}
+
+        <div class="filter-group">
+            <label>Mode</label>
+            <select name="mode" onchange="this.form.submit()">
+                <option value="manual" {{ 'selected' if mode == 'manual' }}>Manual</option>
+                <option value="auto"   {{ 'selected' if mode == 'auto'   }}>Auto-suggest</option>
+            </select>
+        </div>
+
+        {% if mode == 'auto' %}
+        <div class="filter-group">
+            <label>Target fill %</label>
+            <input type="number" name="target" min="50" max="120" value="{{ target_pct }}">
+        </div>
+        <div class="filter-group">
+            <label>&nbsp;</label>
+            <button type="submit" class="btn-primary">Recompute</button>
+        </div>
+        {% endif %}
+
+        <div class="filter-group" style="margin-left:auto;">
+            <label>Moves</label>
+            <div class="filter-value"><strong>{{ overrides|length }}</strong> order(s) moved</div>
+        </div>
+    </form>
+
+    <form method="POST" action="/balancing/move" class="filter-form">
+        <input type="hidden" name="moves"   value="{{ moves_str }}">
+        <input type="hidden" name="action"  value="clear_all">
+        <input type="hidden" name="mode"    value="{{ mode }}">
+        <input type="hidden" name="target"  value="{{ target_pct }}">
+        <div class="filter-group">
+            <label>&nbsp;</label>
+            <button type="submit" class="btn-secondary">Clear All Moves</button>
+        </div>
+    </form>
+</div>
+
+
+// ── BEFORE / AFTER CHART ─────────────────────────────────────────────────
+<div class="chart-card">
+    <div class="chart-header">
+        <h3>Load Before vs After</h3>
+    </div>
+    <div class="chart-container">
+        <canvas id="balanceChart"></canvas>
+    </div>
+</div>
+
+
+// ── KANBAN BOARD ─────────────────────────────────────────────────
+<div class="table-card" style="margin-top:1.5rem;">
+    <div class="table-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:0.5rem;">
+        <h3>Kanban — Drag to Move</h3>
+        <div style="display:flex;gap:0.75rem;align-items:center;">
+            <span id="kanban-pending" style="font-size:0.8rem;color:#f59e0b;display:none;">
+                ● Unsaved changes
+            </span>
+            <button id="kanban-apply" class="btn-primary" style="display:none;" onclick="applyKanbanMoves()">
+                Apply Moves
+            </button>
+            <button class="btn-secondary" onclick="document.getElementById('kanban-board').scrollLeft -= 440">◀</button>
+            <button class="btn-secondary" onclick="document.getElementById('kanban-board').scrollLeft += 440">▶</button>
+        </div>
+    </div>
+
+    <div id="kanban-board" style="
+        display:flex;
+        gap:1rem;
+        overflow-x:auto;
+        padding:1rem;
+        scroll-behavior:smooth;
+    ">
+        {% for col in kanban_columns %}
+        {# Only show months that have orders OR are current/future #}
+        {% if col.orders or col.month >= now_month %}
+        <div class="kanban-col"
+             data-month="{{ col.month }}"
+             data-capacity="{{ col.capacity_hours }}"
+             style="
+                min-width:230px;
+                max-width:230px;
+                background:var(--card-bg,#1f2937);
+                border:1px solid var(--border,#374151);
+                border-radius:8px;
+                padding:0.75rem;
+                flex-shrink:0;
+                transition:outline 0.1s;
+             ">
+
+            <!-- Column header -->
+            <div style="margin-bottom:0.6rem;">
+                <div style="font-weight:700;font-size:0.95rem;color:var(--text);">{{ col.month }}</div>
+                <div style="font-size:0.75rem;color:#9ca3af;margin-top:2px;">
+                    <span class="col-backlog"
+                          data-orig="{{ col.backlog_hours }}">{{ col.backlog_hours | round(0) | int }}</span> h backlog
+                    &nbsp;·&nbsp;
+                    {{ col.capacity_hours | round(0) | int }} h cap
+                </div>
+                <!-- fill bar -->
+                {% set pct = [(col.backlog_hours / col.capacity_hours * 100) if col.capacity_hours else 0, 100] | min %}
+                <div style="margin-top:5px;height:5px;background:#374151;border-radius:3px;">
+                    <div class="col-fill-bar" style="
+                        height:5px;
+                        border-radius:3px;
+                        width:{{ pct }}%;
+                        background:{% if col.backlog_hours > col.capacity_hours %}#ef4444
+                                   {% elif col.backlog_hours > col.capacity_hours * 0.85 %}#f59e0b
+                                   {% else %}#22c55e{% endif %};
+                        transition:width 0.3s ease, background 0.3s ease;
+                    "></div>
+                </div>
+            </div>
+
+            <!-- Drop zone -->
+            <div class="kanban-drop-zone" style="min-height:80px;">
+                {% for o in col.orders %}
+                <div class="kanban-card"
+                     draggable="true"
+                     data-order="{{ o.order_number }}"
+                     data-hours="{{ o.total_labor_hours }}"
+                     data-due="{{ o.due_month }}"
+                     ondragstart="handleDragStart(event)"
+                     ondragend="handleDragEnd(event)"
+                     style="
+                        background:var(--bg,#111827);
+                        border:1px solid {{ '#3b82f6' if o.is_moved else 'var(--border,#374151)' }};
+                        border-radius:6px;
+                        padding:0.5rem 0.65rem;
+                        margin-bottom:0.5rem;
+                        cursor:grab;
+                        font-size:0.78rem;
+                        {{ 'box-shadow:0 0 0 1px #3b82f6 inset;' if o.is_moved else '' }}
+                        user-select:none;
+                     ">
+                    <div style="font-weight:600;color:var(--text);">{{ o.order_number }}</div>
+                    <div style="color:#9ca3af;margin-top:1px;
+                                overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:190px;">
+                        {{ o.item_description[:30] if o.item_description else o.item }}
+                    </div>
+                    <div style="display:flex;justify-content:space-between;margin-top:4px;color:#6b7280;">
+                        <span>{{ o.total_labor_hours | round(1) }} h</span>
+                        <span>due {{ o.due_month }}</span>
+                    </div>
+                    {% if o.is_moved %}
+                    <div class="moved-badge" style="font-size:0.7rem;color:#3b82f6;margin-top:3px;">↑ moved</div>
+                    {% endif %}
+                </div>
+                {% endfor %}
+
+                {% if not col.orders %}
+                <div class="empty-drop-hint" style="
+                    color:#4b5563;font-size:0.75rem;
+                    text-align:center;padding:1.2rem 0;
+                    border:1px dashed #374151;border-radius:6px;
+                ">drop here</div>
+                {% endif %}
+            </div>
+        </div>
+        {% endif %}
+        {% endfor %}
+    </div>
+</div>
+
+
+
+// ── ORDERS TABLE ─────────────────────────────────────────────────
+<div class="table-card">
+    <div class="table-header">
+        <h3>Backlog Orders</h3>
+    </div>
+    <div class="table-wrapper">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Order</th>
+                    <th>Item</th>
+                    <th>Description</th>
+                    <th>Qty</th>
+                    <th>Hours</th>
+                    <th>Due Month</th>
+                    <th>Build Month</th>
+                    <th>Δ Months</th>
+                    <th>Action</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for o in orders %}
+                <tr class="{{ 'row-moved' if o.is_moved else '' }}">
+                    <td><strong>{{ o.order_number }}</strong></td>
+                    <td>{{ o.item }}</td>
+                    <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+                        {{ o.item_description or '—' }}
+                    </td>
+                    <td>{{ o.qty }}</td>
+                    <td>{{ o.total_labor_hours | round(1) }}</td>
+                    <td>{{ o.due_month }}</td>
+                    <td>
+                        {% if o.is_moved %}
+                            <span style="color:#3b82f6;font-weight:600;">{{ o.effective_month }}</span>
+                        {% else %}
+                            {{ o.effective_month }}
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if o.months_pulled > 0 %}
+                            <span style="color:#22c55e;">−{{ o.months_pulled }}</span>
+                        {% else %}
+                            —
+                        {% endif %}
+                    </td>
+                    <td>
+                        <form method="POST" action="/balancing/move" style="display:flex;gap:0.4rem;align-items:center;">
+                            <input type="hidden" name="moves"        value="{{ moves_str }}">
+                            <input type="hidden" name="order_number" value="{{ o.order_number }}">
+                            <input type="hidden" name="mode"         value="{{ mode }}">
+                            <input type="hidden" name="target"       value="{{ target_pct }}">
+                            <select name="target_month" style="font-size:0.78rem;padding:2px 4px;">
+                                {% for m in all_months %}
+                                <option value="{{ m }}"
+                                    {{ 'selected' if m == o.effective_month }}
+                                    {{ 'disabled' if m > o.due_month }}>
+                                    {{ m }}
+                                </option>
+                                {% endfor %}
+                            </select>
+                            <button type="submit" name="action" value="move" class="btn-small btn-primary">Move</button>
+                            {% if o.is_moved %}
+                            <button type="submit" name="action" value="reset" class="btn-small btn-secondary">Reset</button>
+                            {% endif %}
+                        </form>
+                    </td>
+                </tr>
+                {% else %}
+                <tr><td colspan="9" class="empty">No backlog orders</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+// ── CHART SCRIPT ─────────────────────────────────────────────────
+<script>
+(function () {
+    const textColor = getComputedStyle(document.body).getPropertyValue('--text').trim() || '#e5e7eb';
+    const gridColor = '#374151';
+
+    new Chart(document.getElementById('balanceChart'), {
+        type: 'bar',
+        data: {
+            labels: {{ months | tojson }},
+            datasets: [
+                {
+                    label: 'Capacity',
+                    data: {{ capacity_hours | tojson }},
+                    type: 'line',
+                    borderColor: '#95a5a6',
+                    borderDash: [5, 4],
+                    backgroundColor: 'transparent',
+                    pointRadius: 0,
+                    borderWidth: 2,
+                    order: 0
+                },
+                {
+                    label: 'Actual (fixed)',
+                    data: {{ actual_hours | tojson }},
+                    backgroundColor: '#27ae60',
+                    stack: 'load'
+                },
+                {
+                    label: 'Backlog — original',
+                    data: {{ backlog_hours_original | tojson }},
+                    backgroundColor: 'rgba(239,68,68,0.35)',
+                    stack: 'original'
+                },
+                {
+                    label: 'Backlog — after moves',
+                    data: {{ backlog_hours | tojson }},
+                    backgroundColor: '#3498db',
+                    stack: 'load'
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { mode: 'index', intersect: false },
+            scales: {
+                x: {
+                    stacked: true,
+                    ticks: { color: textColor },
+                    grid:  { color: gridColor }
+                },
+                y: {
+                    stacked: true,
+                    ticks: { color: textColor },
+                    grid:  { color: gridColor },
+                    title: { display: true, text: 'Hours', color: textColor }
+                }
+            },
+            plugins: {
+                legend: { labels: { color: textColor } }
+            }
+        }
+    });
+})();
+</script>
+
+// ── KANBAN DRAG SCRIPT ─────────────────────────────────────────────────
+<script>
+(function () {
+    // ── state ────────────────────────────────────────────────
+    const pendingMoves = {};
+    let draggedCard  = null;
+    let draggedHours = 0;
+    let sourceCol    = null;
+
+    // ── drag start ───────────────────────────────────────────
+    window.handleDragStart = function (e) {
+        draggedCard  = e.currentTarget;
+        draggedHours = parseFloat(draggedCard.dataset.hours) || 0;
+        sourceCol    = draggedCard.closest('.kanban-col');
+        e.dataTransfer.effectAllowed = 'move';
+        setTimeout(() => { draggedCard.style.opacity = '0.35'; }, 0);
+    };
+
+    // ── drag end ─────────────────────────────────────────────
+    window.handleDragEnd = function () {
+        if (draggedCard) draggedCard.style.opacity = '1';
+        document.querySelectorAll('.kanban-col').forEach(c => {
+            c.style.outline = '';
+        });
+    };
+
+    // ── col drag-over / drag-leave (delegated) ───────────────
+    document.getElementById('kanban-board').addEventListener('dragover', function (e) {
+        e.preventDefault();
+        const col = e.target.closest('.kanban-col');
+        if (col) col.style.outline = '2px solid #3b82f6';
+    });
+
+    document.getElementById('kanban-board').addEventListener('dragleave', function (e) {
+        const col = e.target.closest('.kanban-col');
+        if (col && !col.contains(e.relatedTarget)) col.style.outline = '';
+    });
+
+    // ── drop ─────────────────────────────────────────────────
+    document.getElementById('kanban-board').addEventListener('drop', function (e) {
+        e.preventDefault();
+        const col = e.target.closest('.kanban-col');
+        if (!col) return;
+        col.style.outline = '';
+
+        if (!draggedCard) return;
+
+        const targetMonth = col.dataset.month;
+        const currentSourceCol = draggedCard.closest('.kanban-col');
+
+        if (targetMonth === currentSourceCol.dataset.month) return;
+
+        const orderNum = draggedCard.dataset.order;
+        const dueMonth = draggedCard.dataset.due;
+
+        // Enforce due-date constraint
+        if (targetMonth > dueMonth) {
+            showToast('Cannot move past due date (' + dueMonth + ')', 'error');
+            return;
+        }
+
+        // Move card in DOM
+        const dropZone = col.querySelector('.kanban-drop-zone');
+
+        // Remove empty-drop hint if present
+        const hint = dropZone.querySelector('.empty-drop-hint');
+        if (hint) hint.remove();
+
+        dropZone.appendChild(draggedCard);
+
+        // Add/update moved badge
+        let badge = draggedCard.querySelector('.moved-badge');
+        if (!badge) {
+            badge = document.createElement('div');
+            badge.className = 'moved-badge';
+            badge.style.cssText = 'font-size:0.7rem;color:#3b82f6;margin-top:3px;';
+            draggedCard.appendChild(badge);
+        }
+        badge.textContent = '↑ moved';
+        draggedCard.style.borderColor = '#3b82f6';
+        draggedCard.style.boxShadow   = '0 0 0 1px #3b82f6 inset';
+
+        // Update pending moves
+        pendingMoves[orderNum] = targetMonth;
+
+        // Live header update
+        const prevSourceMonth = currentSourceCol.dataset.month;
+        updateColHeader(prevSourceMonth, -draggedHours);
+        updateColHeader(targetMonth,     +draggedHours);
+
+        // Show unsaved indicator
+        document.getElementById('kanban-pending').style.display = 'inline';
+        document.getElementById('kanban-apply').style.display   = 'inline-block';
+    });
+
+    // ── live header update ───────────────────────────────────
+    function updateColHeader(month, delta) {
+        const col = document.querySelector('.kanban-col[data-month="' + month + '"]');
+        if (!col) return;
+
+        const backlogEl = col.querySelector('.col-backlog');
+        const fillBar   = col.querySelector('.col-fill-bar');
+        const capacity  = parseFloat(col.dataset.capacity) || 1;
+
+        let current = parseFloat(backlogEl.dataset.current !== undefined
+            ? backlogEl.dataset.current
+            : backlogEl.dataset.orig) || 0;
+
+        current = Math.max(0, current + delta);
+        backlogEl.textContent    = Math.round(current);
+        backlogEl.dataset.current = current;
+
+        const pct = Math.min(current / capacity * 100, 100);
+        fillBar.style.width      = pct + '%';
+        fillBar.style.background = current > capacity            ? '#ef4444'
+                                 : current > capacity * 0.85     ? '#f59e0b'
+                                                                 : '#22c55e';
+    }
+
+    // ── apply button ─────────────────────────────────────────
+    window.applyKanbanMoves = function () {
+        if (!Object.keys(pendingMoves).length) return;
+
+        const form = document.createElement('form');
+        form.method = 'POST';
+        form.action = '/balancing/move';
+
+        const fields = {
+            action:    'bulk_move',
+            bulk_data: JSON.stringify(pendingMoves),
+            moves:     '{{ moves_str | e }}',
+            mode:      '{{ mode }}',
+            target:    '{{ target_pct }}'
+        };
+
+        for (const [k, v] of Object.entries(fields)) {
+            const inp = document.createElement('input');
+            inp.type  = 'hidden';
+            inp.name  = k;
+            inp.value = v;
+            form.appendChild(inp);
+        }
+
+        document.body.appendChild(form);
+        form.submit();
+    };
+
+    // ── toast ─────────────────────────────────────────────────
+    function showToast(msg, type) {
+        const t = document.createElement('div');
+        t.textContent = msg;
+        t.style.cssText = [
+            'position:fixed',
+            'bottom:1.5rem',
+            'right:1.5rem',
+            'background:' + (type === 'error' ? '#ef4444' : '#22c55e'),
+            'color:#fff',
+            'padding:0.6rem 1.1rem',
+            'border-radius:6px',
+            'font-size:0.85rem',
+            'z-index:9999',
+            'box-shadow:0 4px 12px rgba(0,0,0,0.3)'
+        ].join(';');
+        document.body.appendChild(t);
+        setTimeout(() => t.remove(), 3000);
+    }
+})();
+</script>
+
+{% endblock %}

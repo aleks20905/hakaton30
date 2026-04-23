@@ -14,6 +14,12 @@ from analytics_helpers import (
     forecast_vs_capacity,
     get_month_range,
     apply_family_filter,
+    rebalance_rollup,
+    movable_orders,
+    _parse_overrides,
+    _encode_overrides,
+    _auto_rebalance,
+    _backlog_with_effective_month,
 )
 
 app = Flask(__name__)
@@ -331,7 +337,128 @@ def daily_view(month):
         hours=daily["hours_consumed"].tolist(),
         rows=daily.to_dict("records"),
     )
+    
+    
+@app.route("/balancing")
+def balancing_view():
+    data = load_data()
+    if data is None:
+        return render_template("waiting.html"), 503
 
+    params = get_params(request.args)
+    start, end = resolve_date_range(params, data)
+    params["start_month"], params["end_month"] = start, end
+
+    filtered = apply_family_filter(data, params["family"])
+
+    mode = request.args.get("mode", "manual")
+    target = float(request.args.get("target", 90)) / 100.0
+    moves_str = request.args.get("moves", "")
+    overrides = _parse_overrides(moves_str)
+
+    if mode == "auto":
+        bl_eff = _backlog_with_effective_month(filtered, overrides)
+        auto_moves = _auto_rebalance(
+            bl_eff, filtered["capacity"], filtered["actuals"], target
+        )
+        overrides.update(auto_moves)
+
+    rollup = rebalance_rollup(filtered, start, end, overrides)
+    orders = movable_orders(filtered, overrides)
+
+    current = pd.Timestamp.today().strftime("%Y-%m")
+    all_months = get_month_range(current, rollup["month_period"].max())
+    options = get_filter_options(data)
+
+    # ── BUILD KANBAN COLUMNS ───────────────────────────────────────────────
+    import calendar
+    import datetime as dt
+
+    if not orders.empty:
+        print("ORDER COLUMNS:", orders.columns.tolist())
+    orders_list = orders.to_dict("records") if not orders.empty else []
+
+    kanban_cols = []
+    for _, row in rollup.iterrows():
+        m = row["month_period"]          # "YYYY-MM"
+        year, mon = int(m[:4]), int(m[5:7])
+
+        cal_weeks  = calendar.monthcalendar(year, mon)
+        working_days = sum(1 for week in cal_weeks for d in week[:5] if d != 0)
+        daily_cap  = round(row["capacity_hours"] / working_days, 1) if working_days else 0
+
+        days = []
+        num_days = calendar.monthrange(year, mon)[1]
+        for d in range(1, num_days + 1):
+            day_dt = dt.date(year, mon, d)
+            if day_dt.weekday() < 5:          # Mon–Fri only
+                days.append({
+                    "date":          day_dt.strftime("%Y-%m-%d"),
+                    "label":         day_dt.strftime("%a %-d"),   # "Mon 3"
+                    "daily_capacity": daily_cap,
+                })
+
+        col_orders = [o for o in orders_list if o["effective_month"] == m]
+
+        kanban_cols.append({
+            "month":          m,
+            "capacity_hours": row["capacity_hours"],
+            "backlog_hours":  row["backlog_hours"],
+            "working_days":   working_days,
+            "days":           days,
+            "orders":         col_orders,
+        })
+    # ── END KANBAN BUILD ───────────────────────────────────────────────────
+
+    return render_template(
+        "balancing.html",
+        page="balancing",
+        params=params,
+        options=options,
+        mode=mode,
+        target_pct=int(target * 100),
+        moves_str=moves_str,
+        overrides=overrides,
+        filter_query=build_query_string(params),
+        months=rollup["month_period"].tolist(),
+        capacity_hours=rollup["capacity_hours"].tolist(),
+        actual_hours=rollup["actual_hours"].tolist(),
+        backlog_hours=rollup["backlog_hours"].tolist(),
+        backlog_hours_original=rollup["backlog_hours_original"].tolist(),
+        efficiency_pct=rollup["efficiency_pct"].tolist(),
+        efficiency_pct_original=rollup["efficiency_pct_original"].tolist(),
+        orders=orders_list,
+        all_months=all_months,
+        kanban_columns=kanban_cols,
+        now_month=pd.Timestamp.today().strftime("%Y-%m"),
+    )
+
+@app.route("/balancing/move", methods=["POST"])
+def balancing_move():
+    import json
+
+    order      = request.form.get("order_number", "").strip()
+    target_month = request.form.get("target_month", "").strip()
+    moves_str  = request.form.get("moves", "")
+    action     = request.form.get("action", "move")
+
+    overrides = _parse_overrides(moves_str)
+
+    if action == "clear_all":
+        overrides = {}
+    elif action == "reset" and order:
+        overrides.pop(order, None)
+    elif action == "move" and order and target_month:
+        overrides[order] = target_month
+    elif action == "bulk_move":
+        bulk = json.loads(request.form.get("bulk_data", "{}"))
+        for o_num, t_month in bulk.items():
+            if o_num and t_month:
+                overrides[o_num] = t_month
+
+    qs = request.args.to_dict()
+    qs["moves"] = _encode_overrides(overrides)
+    return redirect(url_for("balancing_view", **qs))
 
 # ==============================================================================
 # UPLOAD / DOWNLOAD

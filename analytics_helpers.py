@@ -242,3 +242,211 @@ def forecast_vs_capacity(data: dict, start: str, end: str) -> pd.DataFrame:
     )
     out["capacity_remaining"] = (out["capacity_hours"] - out["forecast_hours"]).round(1)
     return out
+
+# ==============================================================================
+# BACKLOG REBALANCING (Pull-Forward)
+# ==============================================================================
+
+def _parse_overrides(moves_str: str) -> dict:
+    """Parse 'ORDER1:2026-04,ORDER2:2026-05' → {'ORDER1': '2026-04', ...}"""
+    if not moves_str:
+        return {}
+    out = {}
+    for pair in moves_str.split(","):
+        if ":" not in pair:
+            continue
+        order, month = pair.split(":", 1)
+        order, month = order.strip(), month.strip()
+        if order and month:
+            out[order] = month
+    return out
+
+
+def _encode_overrides(overrides: dict) -> str:
+    """Inverse of _parse_overrides — for building URLs."""
+    return ",".join(f"{k}:{v}" for k, v in overrides.items())
+
+
+def _backlog_with_effective_month(data: dict, overrides: dict) -> pd.DataFrame:
+    """
+    Returns backlog DataFrame with an 'effective_month' column.
+    Invalid overrides (later than due_month) are silently dropped.
+    """
+    bl = data["backlog"].copy()
+    if bl.empty or "order_number" not in bl.columns:
+        return bl
+
+    bl["due_month"] = bl["month_period"]  # original due month
+    bl["effective_month"] = bl["due_month"]
+
+    if overrides:
+        # Apply override only if <= due_month
+        for order, target_month in overrides.items():
+            mask = bl["order_number"].astype(str) == str(order)
+            if not mask.any():
+                continue
+            # Check each matching row — an order_number can appear multiple times
+            for idx in bl[mask].index:
+                due = bl.at[idx, "due_month"]
+                if target_month <= due:  # string compare works for YYYY-MM
+                    bl.at[idx, "effective_month"] = target_month
+
+    return bl
+
+
+def _auto_rebalance(bl: pd.DataFrame, capacity: pd.DataFrame,
+                    actuals: pd.DataFrame, target: float) -> dict:
+    """
+    Greedy: for each month (earliest first), pull backlog orders from later
+    months until month reaches target fill. Respects due_month hard cap.
+    Returns overrides dict {order_number: new_month}.
+    """
+    if bl.empty or capacity.empty:
+        return {}
+
+    # Build month → capacity map
+    cap_map = dict(zip(capacity["month_period"], capacity["available_gross_hours"]))
+
+    # Build month → actual hours map
+    act_map = {}
+    if not actuals.empty and "hours_consumed" in actuals.columns:
+        act_agg = actuals.groupby("month_period")["hours_consumed"].sum()
+        act_map = act_agg.to_dict()
+
+    # Only consider future (or current) months — can't rebuild the past
+    current = pd.Timestamp.today().strftime("%Y-%m")
+    months_sorted = sorted(m for m in cap_map.keys() if m >= current)
+
+    all_months_seen = set(cap_map.keys()) | set(bl["due_month"].unique()) | set(bl["effective_month"].unique())
+    load = {m: act_map.get(m, 0.0) for m in all_months_seen}
+    for m in all_months_seen:
+        load[m] += bl[bl["effective_month"] == m]["total_labor_hours"].sum()
+
+    overrides = {}
+
+    for M in months_sorted:
+        cap = cap_map.get(M, 0)
+        if cap <= 0:
+            continue
+        deficit = target * cap - load[M]
+        if deficit <= 0:
+            continue
+
+        # Candidate orders: due in a LATER month, currently assigned to their due_month
+        candidates = bl[
+            (bl["due_month"] > M) &
+            (bl["effective_month"] == bl["due_month"]) &
+            (~bl["order_number"].isin(overrides.keys()))
+        ].sort_values(["due_month", "total_labor_hours"], ascending=[True, False])
+
+        for _, row in candidates.iterrows():
+            hrs = row["total_labor_hours"]
+            if hrs <= deficit:
+                order = row["order_number"]
+                due = row["due_month"]
+                overrides[order] = M
+                load[M] = load.get(M, 0.0) + hrs
+                load[due] = load.get(due, 0.0) - hrs
+                deficit -= hrs
+            if deficit <= 1:
+                break
+
+    return overrides
+
+
+def rebalance_rollup(data: dict, start: str, end: str,
+                     overrides: dict) -> pd.DataFrame:
+    """
+    Monthly rollup after applying overrides — same shape as monthly_rollup()
+    but backlog is grouped by effective_month instead of due_month.
+    """
+    months = get_month_range(start, end)
+    base = pd.DataFrame({"month_period": months})
+
+    # Capacity
+    cap = data["capacity"]
+    cap_col = "gross_hours" if "gross_hours" in cap.columns else "available_gross_hours"
+    if not cap.empty and cap_col in cap.columns:
+        cap_agg = cap[["month_period", cap_col]].rename(
+            columns={cap_col: "capacity_hours"}
+        )
+        base = base.merge(cap_agg, on="month_period", how="left")
+    else:
+        base["capacity_hours"] = 0.0
+
+    # Actuals (unchanged)
+    act = data["actuals"]
+    if not act.empty and "hours_consumed" in act.columns:
+        act_agg = act.groupby("month_period", as_index=False)["hours_consumed"].sum()
+        act_agg = act_agg.rename(columns={"hours_consumed": "actual_hours"})
+        base = base.merge(act_agg, on="month_period", how="left")
+    else:
+        base["actual_hours"] = 0.0
+
+    # Backlog by effective_month
+    bl = _backlog_with_effective_month(data, overrides)
+    if not bl.empty:
+        bl_agg = bl.groupby("effective_month", as_index=False)["total_labor_hours"].sum()
+        bl_agg = bl_agg.rename(columns={
+            "effective_month": "month_period",
+            "total_labor_hours": "backlog_hours"
+        })
+        base = base.merge(bl_agg, on="month_period", how="left")
+    else:
+        base["backlog_hours"] = 0.0
+
+    # Also compute ORIGINAL backlog (before moves) for before/after chart
+    if not bl.empty:
+        orig_agg = bl.groupby("due_month", as_index=False)["total_labor_hours"].sum()
+        orig_agg = orig_agg.rename(columns={
+            "due_month": "month_period",
+            "total_labor_hours": "backlog_hours_original"
+        })
+        base = base.merge(orig_agg, on="month_period", how="left")
+    else:
+        base["backlog_hours_original"] = 0.0
+
+    for col in ["capacity_hours", "actual_hours", "backlog_hours", "backlog_hours_original"]:
+        base[col] = base[col].fillna(0).round(1)
+
+    base["total_load"] = (base["actual_hours"] + base["backlog_hours"]).round(1)
+    base["total_load_original"] = (base["actual_hours"] + base["backlog_hours_original"]).round(1)
+
+    base["efficiency_pct"] = np.where(
+        base["capacity_hours"] > 0,
+        (base["total_load"] / base["capacity_hours"] * 100).round(1),
+        0,
+    )
+    base["efficiency_pct_original"] = np.where(
+        base["capacity_hours"] > 0,
+        (base["total_load_original"] / base["capacity_hours"] * 100).round(1),
+        0,
+    )
+
+    return base
+
+
+def movable_orders(data: dict, overrides: dict) -> pd.DataFrame:
+    """
+    Return all backlog orders with their current effective_month and a list
+    of valid target months (= due_month or earlier, but >= current month).
+    Used to populate the manual-move table.
+    """
+    bl = _backlog_with_effective_month(data, overrides)
+    if bl.empty:
+        return bl
+
+    current = pd.Timestamp.today().strftime("%Y-%m")
+
+    # Sort by due date then hours descending
+    bl = bl.sort_values(["due_month", "total_labor_hours"], ascending=[True, False])
+
+    # Flag whether it's been moved
+    bl["is_moved"] = bl["effective_month"] != bl["due_month"]
+    bl["months_pulled"] = bl.apply(
+        lambda r: (pd.Period(r["due_month"]) - pd.Period(r["effective_month"])).n
+        if r["is_moved"] else 0,
+        axis=1
+    )
+
+    return bl
