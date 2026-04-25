@@ -13,14 +13,18 @@
 <!-- MODE + AUTO CONTROLS -->
 <div class="filter-bar">
     <form method="GET" action="/balancing" class="filter-form">
-        <input type="hidden" name="moves" value="{{ moves_str }}">
+
+        <input type="hidden" id="moves-hidden" name="moves" value="{{ moves_str }}">
         {% if params.family %}<input type="hidden" name="family" value="{{ params.family }}">{% endif %}
         {% if params.start_month %}<input type="hidden" name="start_month" value="{{ params.start_month }}">{% endif %}
         {% if params.end_month %}<input type="hidden" name="end_month" value="{{ params.end_month }}">{% endif %}
 
         <div class="filter-group">
             <label>Mode</label>
-            <select name="mode" onchange="this.form.submit()">
+            <select name="mode" onchange="
+                document.getElementById('moves-hidden').value = 
+                    this.value === 'manual' ? '{{ moves_str_with_auto }}' : '{{ moves_str }}';
+                this.form.submit();">
                 <option value="manual" {{ 'selected' if mode == 'manual' }}>Manual</option>
                 <option value="auto"   {{ 'selected' if mode == 'auto'   }}>Auto-suggest</option>
             </select>
@@ -44,10 +48,11 @@
     </form>
 
     <form method="POST" action="/balancing/move" class="filter-form">
-        <input type="hidden" name="moves"   value="{{ moves_str }}">
-        <input type="hidden" name="action"  value="clear_all">
-        <input type="hidden" name="mode"    value="{{ mode }}">
-        <input type="hidden" name="target"  value="{{ target_pct }}">
+        <input type="hidden" name="start_month" value="{{ params.start_month }}">
+        <input type="hidden" name="end_month"   value="{{ params.end_month }}">
+        <input type="hidden" name="family"      value="{{ params.family }}">
+        <input type="hidden" name="mode"        value="manual">
+        <input type="hidden" name="target"      value="{{ target_pct }}">
         <div class="filter-group">
             <label>&nbsp;</label>
             <button type="submit" class="btn-secondary">Clear All Moves</button>
@@ -229,7 +234,7 @@
                         <form method="POST" action="/balancing/move" style="display:flex;gap:0.4rem;align-items:center;">
                             <input type="hidden" name="moves"        value="{{ moves_str }}">
                             <input type="hidden" name="order_number" value="{{ o.order_number }}">
-                            <input type="hidden" name="mode"         value="{{ mode }}">
+                            <input type="hidden" name="mode" value="manual">
                             <input type="hidden" name="target"       value="{{ target_pct }}">
                             <select name="target_month" style="font-size:0.78rem;padding:2px 4px;">
                                 {% for m in all_months %}

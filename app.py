@@ -363,6 +363,8 @@ def balancing_view():
         )
         overrides.update(auto_moves)
 
+    moves_str_with_auto = _encode_overrides(overrides)
+
     rollup = rebalance_rollup(filtered, start, end, overrides)
     orders = movable_orders(filtered, overrides)
 
@@ -374,8 +376,8 @@ def balancing_view():
     import calendar
     import datetime as dt
 
-    if not orders.empty:
-        print("ORDER COLUMNS:", orders.columns.tolist())
+    # if not orders.empty:
+    #     print("ORDER COLUMNS:", orders.columns.tolist())
     orders_list = orders.to_dict("records") if not orders.empty else []
 
     kanban_cols = []
@@ -409,7 +411,7 @@ def balancing_view():
             "orders":         col_orders,
         })
     # ── END KANBAN BUILD ───────────────────────────────────────────────────
-
+    
     return render_template(
         "balancing.html",
         page="balancing",
@@ -418,6 +420,7 @@ def balancing_view():
         mode=mode,
         target_pct=int(target * 100),
         moves_str=moves_str,
+        moves_str_with_auto=moves_str_with_auto,  # mode switch button
         overrides=overrides,
         filter_query=build_query_string(params),
         months=rollup["month_period"].tolist(),
@@ -426,7 +429,7 @@ def balancing_view():
         backlog_hours=rollup["backlog_hours"].tolist(),
         backlog_hours_original=rollup["backlog_hours_original"].tolist(),
         efficiency_pct=rollup["efficiency_pct"].tolist(),
-        efficiency_pct_original=rollup["efficiency_pct_original"].tolist(),
+        efficiency_pct_original=rollup["efficiency_pct_original"].tolist(),                  # keep original for forms
         orders=orders_list,
         all_months=all_months,
         kanban_columns=kanban_cols,
@@ -436,11 +439,12 @@ def balancing_view():
 @app.route("/balancing/move", methods=["POST"])
 def balancing_move():
     import json
+    from urllib.parse import urlparse, parse_qs
 
-    order      = request.form.get("order_number", "").strip()
+    order        = request.form.get("order_number", "").strip()
     target_month = request.form.get("target_month", "").strip()
-    moves_str  = request.form.get("moves", "")
-    action     = request.form.get("action", "move")
+    moves_str    = request.form.get("moves", "")
+    action       = request.form.get("action", "move")
 
     overrides = _parse_overrides(moves_str)
 
@@ -456,8 +460,14 @@ def balancing_move():
             if o_num and t_month:
                 overrides[o_num] = t_month
 
-    qs = request.args.to_dict()
+    # Parse query string from the page that submitted the form
+    referer = request.headers.get("Referer", "")
+    parsed  = urlparse(referer)
+    qs = {k: v[0] for k, v in parse_qs(parsed.query).items()}
+
+    # Only overwrite moves
     qs["moves"] = _encode_overrides(overrides)
+
     return redirect(url_for("balancing_view", **qs))
 
 # ==============================================================================
