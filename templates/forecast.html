@@ -1,19 +1,82 @@
 {% extends "base.html" %}
-{% block title %}Forecast{% endblock %}
+{% block title %}Forecast vs Capacity{% endblock %}
 {% block heading %}Forecast vs Capacity{% endblock %}
-{% block subtitle %}Planned load analysis{% endblock %}
+{% block subtitle %}Compare planned production forecast against available capacity.{% endblock %}
 
 {% block content %}
-<div class="chart-card" style="margin-bottom:20px;">
-    <div class="chart-header">
-        <h3>Forecast Load by Month</h3>
+
+<!-- SUMMARY KPIS -->
+<div class="kpi-grid" style="margin-bottom:1.5rem;">
+    <div class="kpi-card">
+        <div class="kpi-header">
+            <span class="kpi-label">Avg Forecast Efficiency</span>
+        </div>
+        <div class="kpi-value">
+            {{ avg_eff }}%
+        </div>
+        <div class="progress-bar">
+            <div class="progress-fill {% if avg_eff > 100 %}poor{% elif avg_eff > 80 %}fair{% else %}good{% endif %}"
+                 style="width:{{ avg_eff if avg_eff <= 100 else 100 }}%;"></div>
+        </div>
     </div>
-    <canvas id="forecastChart" style="max-height:400px;"></canvas>
+    <div class="kpi-card">
+        <div class="kpi-header">
+            <span class="kpi-label">Months Over Capacity</span>
+        </div>
+        <div class="kpi-value" style="color:{{ '#ef4444' if months_over > 0 else '#10b981' }};">
+            {{ months_over }}/{{ total_months }}
+        </div>
+        <div class="kpi-footer">
+            <span class="kpi-tag {% if months_over > 0 %}negative{% else %}positive{% endif %}">
+                {% if months_over > 0 %}Action needed{% else %}All good{% endif %}
+            </span>
+        </div>
+    </div>
+    <div class="kpi-card">
+        <div class="kpi-header">
+            <span class="kpi-label">Total Forecast Hours</span>
+        </div>
+        <div class="kpi-value">
+            {{ "{:,}".format(total_fc) }}h
+        </div>
+        <div class="kpi-footer">
+            <span class="kpi-tag neutral">
+                {{ "{:,}".format(total_cap) }}h capacity
+            </span>
+        </div>
+    </div>
+    <div class="kpi-card">
+        <div class="kpi-header">
+            <span class="kpi-label">Total Capacity Remaining</span>
+        </div>
+        <div class="kpi-value" style="color:{{ '#10b981' if total_remaining > 0 else '#ef4444' }};">
+            {{ "{:,}".format(total_remaining) }}h
+        </div>
+        <div class="kpi-footer">
+            <span class="kpi-tag {% if total_remaining > 0 %}positive{% else %}negative{% endif %}">
+                {% if total_remaining > 0 %}Surplus{% else %}Deficit{% endif %}
+            </span>
+        </div>
+    </div>
 </div>
 
+<!-- CHART -->
+<div class="chart-card" style="margin-bottom:1.5rem;">
+    <div class="chart-header">
+        <h3>Forecast vs Capacity</h3>
+        <span class="chart-badge">Monthly view</span>
+    </div>
+    <canvas id="forecastChart" style="max-height:400px;"></canvas>
+    <div style="padding:0.75rem 1rem;font-size:0.75rem;color:var(--text-muted);border-top:1px solid var(--border);">
+        <i class="bi bi-info-circle" style="margin-right:0.4rem;"></i>
+        Blue = forecast hours. Gray = capacity line. Orange = efficiency % (right axis). Click legend to toggle.
+    </div>
+</div>
+
+<!-- TABLE -->
 <div class="table-card">
     <div class="table-header">
-        <h3>Monthly Forecast Breakdown</h3>
+        <h3>Monthly Breakdown</h3>
         <span class="record-count">{{ rows|length }} months</span>
     </div>
     <div class="table-wrapper">
@@ -21,31 +84,42 @@
             <thead>
                 <tr>
                     <th>Month</th>
-                    <th>Capacity Hours</th>
-                    <th>Forecast Hours</th>
-                    <th>Forecast Efficiency %</th>
-                    <th>Capacity Remaining</th>
+                    <th>Capacity</th>
+                    <th>Forecast</th>
+                    <th style="width:200px;">Utilization</th>
+                    <th>Remaining</th>
+                    <th>Status</th>
                 </tr>
             </thead>
             <tbody>
                 {% for r in rows %}
                 <tr>
                     <td><strong>{{ r.month_period }}</strong></td>
-                    <td>{{ "{:,.1f}".format(r.capacity_hours) }}</td>
-                    <td>{{ "{:,.1f}".format(r.forecast_hours) }}</td>
+                    <td>{{ "{:,.0f}".format(r.capacity_hours) }}h</td>
+                    <td>{{ "{:,.0f}".format(r.forecast_hours) }}h</td>
                     <td>
-                        <span class="kpi-tag {{ 'negative' if r.forecast_efficiency >= 100 else 'warning' if r.forecast_efficiency >= 80 else 'positive' }}">
-                            {{ r.forecast_efficiency }}%
-                        </span>
+                        <div style="display:flex;align-items:center;gap:0.5rem;">
+                            <div class="progress-bar" style="flex:1;">
+                                {% set pct = r.forecast_efficiency if r.forecast_efficiency <= 100 else 100 %}
+                                <div class="progress-fill {% if r.forecast_efficiency >= 100 %}poor{% elif r.forecast_efficiency >= 80 %}fair{% else %}good{% endif %}"
+                                     style="width:{{ pct }}%;"></div>
+                            </div>
+                            <span style="font-size:0.8rem;color:var(--text-muted);min-width:45px;">{{ r.forecast_efficiency }}%</span>
+                        </div>
                     </td>
                     <td>
                         <span class="{{ 'negative' if r.capacity_remaining < 0 else 'positive' }}">
-                            {{ "{:,.1f}".format(r.capacity_remaining) }}
+                            {{ "{:,.0f}".format(r.capacity_remaining) }}h
+                        </span>
+                    </td>
+                    <td>
+                        <span class="kpi-tag {{ 'negative' if r.forecast_efficiency >= 100 else 'warning' if r.forecast_efficiency >= 80 else 'positive' }}">
+                            {% if r.forecast_efficiency >= 100 %}Over{% elif r.forecast_efficiency >= 80 %}High{% else %}OK{% endif %}
                         </span>
                     </td>
                 </tr>
                 {% else %}
-                <tr><td colspan="5" class="empty">No forecast data in range</td></tr>
+                <tr><td colspan="6" class="empty">No forecast data in range</td></tr>
                 {% endfor %}
             </tbody>
         </table>
@@ -55,7 +129,7 @@
 
 {% block scripts %}
 <script>
-const grid = 'rgba(100,116,139,0.08)';
+const grid = 'rgba(100,116,139,0.15)';
 const textColor = '#94a3b8';
 
 new Chart(document.getElementById('forecastChart'), {
@@ -63,28 +137,83 @@ new Chart(document.getElementById('forecastChart'), {
     data: {
         labels: {{ months|tojson }},
         datasets: [
-            { label:'Capacity', data:{{ capacity_hours|tojson }}, backgroundColor:'#95a5a6' },
-            { label:'Forecast', data:{{ forecast_hours|tojson }}, backgroundColor:'#3498db' },
+            {
+                label:'Capacity',
+                data:{{ capacity_hours|tojson }},
+                type:'line',
+                borderColor:'#94a3b8',
+                borderDash:[5,4],
+                backgroundColor:'transparent',
+                pointRadius:3,
+                pointBackgroundColor:'#94a3b8',
+                borderWidth:2,
+                order:0,
+                yAxisID:'y'
+            },
+            {
+                label:'Forecast',
+                data:{{ forecast_hours|tojson }},
+                backgroundColor:'#3b82f6',
+                borderRadius:4,
+                order:2
+            },
             {
                 label:'Forecast Eff %',
                 data:{{ forecast_eff|tojson }},
                 type:'line',
                 borderColor:'#f59e0b',
-                backgroundColor:'#f59e0b',
+                backgroundColor:'rgba(245,158,11,0.1)',
+                fill:false,
                 yAxisID:'y1',
-                tension:0.3
+                tension:0.3,
+                pointRadius:3,
+                order:1
             }
         ]
     },
     options: {
         responsive:true,
+        maintainAspectRatio:false,
         interaction: { mode:'index', intersect:false },
         scales: {
-            x:{ ticks:{color:textColor}, grid:{color:grid} },
-            y:{ ticks:{color:textColor}, grid:{color:grid}, title:{display:true,text:'Hours',color:textColor} },
-            y1:{ position:'right', ticks:{color:textColor, callback:v=>v+'%'}, grid:{display:false}, min:0, max:150 }
+            x:{ ticks:{color:textColor,fontSize:11}, grid:{color:grid} },
+            y:{
+                ticks:{color:textColor, fontFamily:'Inter', fontSize:11},
+                grid:{color:grid},
+                title:{display:true,text:'Hours',color:textColor,fontFamily:'Inter'}
+            },
+            y1:{
+                position:'right',
+                ticks:{color:textColor, callback:v=>v+'%', fontSize:11},
+                grid:{display:false},
+                min:0,
+                suggestedMax:120
+            }
         },
-        plugins: { legend:{ labels:{ color:textColor } } }
+        plugins: {
+            legend:{
+                labels:{
+                    color:textColor,
+                    usePointStyle:true,
+                    pointStyle:'roundRect',
+                    font:{family:'Inter', size:12}
+                }
+            },
+            tooltip:{
+                backgroundColor:'#1e293b',
+                titleFont:{family:'Inter',weight:'bold'},
+                bodyFont:{family:'Inter'},
+                borderColor:'#334155',
+                borderWidth:1,
+                padding:12,
+                callbacks:{
+                    label:function(ctx){
+                        if(ctx.dataset.yAxisID==='y1') return ctx.dataset.label+': '+ctx.parsed.y+'%';
+                        return ctx.dataset.label+': '+ctx.parsed.y.toLocaleString()+'h';
+                    }
+                }
+            }
+        }
     }
 });
 </script>

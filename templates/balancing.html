@@ -1,13 +1,73 @@
 {% extends "base.html" %}
-{% block title %}Forcast Balancing{% endblock %}
-{% block heading %}Backlog Pull-Forward{% endblock %}
-{% block subtitle %}Move backlog orders to earlier months to smooth load. Due dates are never exceeded.{% endblock %}
+{% block title %}Load Balancing{% endblock %}
+{% block heading %}Load Balancing{% endblock %}
+{% block subtitle %}Drag orders to earlier months to smooth production load. Due dates are always respected.{% endblock %}
 
 {% block content %}
 
 <style>
 .kanban-card:active { cursor: grabbing; }
 .kanban-col.drag-over { outline: 2px solid #3b82f6; }
+
+/* Summary stats */
+.summary-stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+}
+.stat-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1rem 1.25rem;
+}
+.stat-card .label {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-weight: 600;
+    margin-bottom: 0.35rem;
+}
+.stat-card .value {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+.stat-card .value.small { font-size: 1.2rem; }
+.stat-card .change {
+    font-size: 0.75rem;
+    margin-top: 0.25rem;
+}
+.stat-card .change.positive { color: var(--accent-green); }
+.stat-card .change.negative { color: var(--accent-red); }
+.stat-card .change.neutral { color: var(--text-muted); }
+
+/* Legend */
+.legend-bar {
+    display: flex;
+    gap: 1.25rem;
+    flex-wrap: wrap;
+    padding: 0.75rem 1rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    margin-bottom: 1.5rem;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+.legend-item {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+.legend-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
 </style>
 
 <!-- MODE + AUTO CONTROLS -->
@@ -60,13 +120,72 @@
     </form>
 </div>
 
+<!-- SUMMARY STATS -->
+<div class="summary-stats">
+    <div class="stat-card">
+        <div class="label">Orders Moved</div>
+        <div class="value">{{ overrides|length }}</div>
+        <div class="change neutral">Drag cards or use auto-suggest</div>
+    </div>
+    <div class="stat-card">
+        <div class="label">Avg Load Before</div>
+        <div class="value small">{{ avg_before }}%</div>
+        <div class="change neutral">Across {{ total_months }} months</div>
+    </div>
+    <div class="stat-card">
+        <div class="label">Avg Load After</div>
+        <div class="value small">{{ avg_after }}%</div>
+        <div class="change {{ 'positive' if avg_after < avg_before else 'neutral' }}">
+            {% if overrides|length > 0 %}
+                {{ "%.1f"|format(avg_after - avg_before) }}% vs before
+            {% else %}
+                No changes yet
+            {% endif %}
+        </div>
+    </div>
+    <div class="stat-card">
+        <div class="label">Months Balanced</div>
+        <div class="value small">{{ months_balanced }}/{{ total_months }}</div>
+        <div class="change neutral">Target: 70-100% load</div>
+    </div>
+</div>
+
+<!-- LEGEND -->
+<div class="legend-bar">
+    <div class="legend-item">
+        <span class="legend-dot" style="background:#22c55e;"></span>
+        <span>Balanced (70-100%)</span>
+    </div>
+    <div class="legend-item">
+        <span class="legend-dot" style="background:#f59e0b;"></span>
+        <span>Warning (50-70%)</span>
+    </div>
+    <div class="legend-item">
+        <span class="legend-dot" style="background:#ef4444;"></span>
+        <span>Overloaded (&gt;100%)</span>
+    </div>
+    <div class="legend-item">
+        <span class="legend-dot" style="background:#3b82f6;"></span>
+        <span>Moved order</span>
+    </div>
+    <div class="legend-item">
+        <span class="legend-dot" style="background:#27ae60; opacity:0.35;"></span>
+        <span>Original backlog</span>
+    </div>
+</div>
+
 <!-- BEFORE / AFTER CHART -->
 <div class="chart-card">
     <div class="chart-header">
-        <h3>Load Before vs After</h3>
+        <h3>Load: Before vs After Balancing</h3>
+        <span class="chart-badge">Stacked view</span>
     </div>
     <div class="chart-container">
         <canvas id="balanceChart"></canvas>
+    </div>
+    <div style="padding:0.75rem 1rem;font-size:0.75rem;color:var(--text-muted);border-top:1px solid var(--border);">
+        <i class="bi bi-info-circle" style="margin-right:0.4rem;"></i>
+        Green = actual hours (fixed). Red = original backlog. Blue = adjusted backlog after moves. Line = capacity.
     </div>
 </div>
 
@@ -100,8 +219,8 @@
              data-month="{{ col.month }}"
              data-capacity="{{ col.capacity_hours }}"
              style="
-                min-width:230px;
-                max-width:230px;
+                min-width:250px;
+                max-width:250px;
                 background:var(--card-bg,#1f2937);
                 border:1px solid var(--border,#374151);
                 border-radius:8px;
@@ -112,25 +231,20 @@
 
             <!-- Column header -->
             <div style="margin-bottom:0.6rem;">
-                <div style="font-weight:700;font-size:0.95rem;color:var(--text);">{{ col.month }}</div>
-                <div style="font-size:0.75rem;color:#9ca3af;margin-top:2px;">
+                <div style="display:flex;justify-content:space-between;align-items:baseline;">
+                    <div style="font-weight:700;font-size:0.95rem;color:var(--text);">{{ col.month }}</div>
+                    <span style="font-size:0.7rem;font-weight:600;padding:2px 8px;border-radius:10px;background:{{ col.fill_color }};color:{{ col.text_color }};">
+                        {{ "%.0f"|format(col.pct) }}%
+                    </span>
+                </div>
+                <div style="font-size:0.75rem;color:#9ca3af;margin-top:4px;">
                     <span class="col-backlog"
-                          data-orig="{{ col.backlog_hours }}">{{ col.backlog_hours | round(0) | int }}</span> h backlog
-                    &nbsp;·&nbsp;
-                    {{ col.capacity_hours | round(0) | int }} h cap
+                          data-orig="{{ col.backlog_hours }}">{{ col.backlog_hours | round(0) | int }}</span>h / {{ col.capacity_hours | round(0) | int }}h
                 </div>
                 <!-- fill bar -->
-                {% set pct = [(col.backlog_hours / col.capacity_hours * 100) if col.capacity_hours else 0, 100] | min %}
-                <div style="margin-top:5px;height:5px;background:#374151;border-radius:3px;">
-                    <div class="col-fill-bar" style="
-                        height:5px;
-                        border-radius:3px;
-                        width:{{ pct }}%;
-                        background:{% if col.backlog_hours > col.capacity_hours %}#ef4444
-                                   {% elif col.backlog_hours > col.capacity_hours * 0.85 %}#f59e0b
-                                   {% else %}#22c55e{% endif %};
-                        transition:width 0.3s ease, background 0.3s ease;
-                    "></div>
+                <div style="margin-top:6px;height:6px;background:#374151;border-radius:3px;">
+                    <div class="col-fill-bar"
+                         style="height:6px;border-radius:3px;width:{{ col.pct }}%;background:{{ col.fill_color }};transition:width 0.3s ease, background 0.3s ease;"></div>
                 </div>
             </div>
 
@@ -173,9 +287,9 @@
                 {% if not col.orders %}
                 <div class="empty-drop-hint" style="
                     color:#4b5563;font-size:0.75rem;
-                    text-align:center;padding:1.2rem 0;
+                    text-align:center;padding:1.2rem 0.5rem;
                     border:1px dashed #374151;border-radius:6px;
-                ">drop here</div>
+                "><i class="bi bi-inbox" style="display:block;font-size:1.2rem;margin-bottom:0.3rem;"></i>Drop orders here</div>
                 {% endif %}
             </div>
         </div>
@@ -266,6 +380,9 @@
     const textColor = getComputedStyle(document.body).getPropertyValue('--text').trim() || '#e5e7eb';
     const gridColor = '#374151';
 
+    const effBefore = {{ efficiency_pct_original | tojson }};
+    const effAfter  = {{ efficiency_pct | tojson }};
+
     new Chart(document.getElementById('balanceChart'), {
         type: 'bar',
         data: {
@@ -275,30 +392,31 @@
                     label: 'Capacity',
                     data: {{ capacity_hours | tojson }},
                     type: 'line',
-                    borderColor: '#95a5a6',
+                    borderColor: '#94a3b8',
                     borderDash: [5, 4],
                     backgroundColor: 'transparent',
-                    pointRadius: 0,
+                    pointRadius: 3,
+                    pointBackgroundColor: '#94a3b8',
                     borderWidth: 2,
                     order: 0
                 },
                 {
                     label: 'Actual (fixed)',
                     data: {{ actual_hours | tojson }},
-                    backgroundColor: '#27ae60',
+                    backgroundColor: '#10b981',
+                    stack: 'load'
+                },
+                {
+                    label: 'Backlog — after moves',
+                    data: {{ backlog_hours | tojson }},
+                    backgroundColor: '#3b82f6',
                     stack: 'load'
                 },
                 {
                     label: 'Backlog — original',
                     data: {{ backlog_hours_original | tojson }},
-                    backgroundColor: 'rgba(239,68,68,0.35)',
+                    backgroundColor: 'rgba(239,68,68,0.25)',
                     stack: 'original'
-                },
-                {
-                    label: 'Backlog — after moves',
-                    data: {{ backlog_hours | tojson }},
-                    backgroundColor: '#3498db',
-                    stack: 'load'
                 }
             ]
         },
@@ -320,7 +438,18 @@
                 }
             },
             plugins: {
-                legend: { labels: { color: textColor } }
+                legend: { labels: { color: textColor, usePointStyle: true } },
+                tooltip: {
+                    callbacks: {
+                        afterBody: function(ctx) {
+                            const i = ctx[0].dataIndex;
+                            return [
+                                'Load before: ' + (effBefore[i] || 0).toFixed(1) + '%',
+                                'Load after:  ' + (effAfter[i] || 0).toFixed(1) + '%'
+                            ];
+                        }
+                    }
+                }
             }
         }
     });

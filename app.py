@@ -293,6 +293,14 @@ def forecast_view():
     fvc = forecast_vs_capacity(filtered, start, end)
     options = get_filter_options(data)
 
+    # Summary stats for KPI cards
+    effs = fvc["forecast_efficiency"].tolist()
+    avg_eff = round(sum(effs) / len(effs), 1) if effs else 0
+    months_over = sum(1 for e in effs if e >= 100)
+    total_fc = int(fvc["forecast_hours"].sum())
+    total_cap = int(fvc["capacity_hours"].sum())
+    total_remaining = int(fvc["capacity_hours"].sum() - fvc["forecast_hours"].sum())
+
     return render_template(
         "forecast.html",
         page="forecast",
@@ -304,6 +312,12 @@ def forecast_view():
         forecast_hours=fvc["forecast_hours"].tolist(),
         forecast_eff=fvc["forecast_efficiency"].tolist(),
         rows=fvc.to_dict("records"),
+        avg_eff=avg_eff,
+        months_over=months_over,
+        total_months=len(effs),
+        total_fc=total_fc,
+        total_cap=total_cap,
+        total_remaining=total_remaining,
     )
 
 
@@ -359,7 +373,8 @@ def balancing_view():
     if mode == "auto":
         bl_eff = _backlog_with_effective_month(filtered, overrides)
         auto_moves = _auto_rebalance(
-            bl_eff, filtered["capacity"], filtered["actuals"], target
+            bl_eff, filtered["capacity"], filtered["actuals"], target,
+            forecast=filtered.get("forecast")
         )
         overrides.update(auto_moves)
 
@@ -371,6 +386,13 @@ def balancing_view():
     current = pd.Timestamp.today().strftime("%Y-%m")
     all_months = get_month_range(current, rollup["month_period"].max())
     options = get_filter_options(data)
+
+    # Summary stats for KPI cards
+    eff_before = rollup["efficiency_pct_original"].tolist()
+    eff_after = rollup["efficiency_pct"].tolist()
+    avg_before = round(sum(eff_before) / len(eff_before), 1) if eff_before else 0
+    avg_after = round(sum(eff_after) / len(eff_after), 1) if eff_after else 0
+    months_balanced = sum(1 for e in eff_after if 70 <= e <= 100)
 
     # ── BUILD KANBAN COLUMNS ───────────────────────────────────────────────
     import calendar
@@ -402,10 +424,36 @@ def balancing_view():
 
         col_orders = [o for o in orders_list if o["effective_month"] == m]
 
+        # Pre-compute values for the template to avoid Jinja2 inline issues
+        cap = row["capacity_hours"]
+        bl = row["backlog_hours"]
+        pct = min(round((bl / cap * 100) if cap else 0, 1), 100)
+        # Determine badge color class and text color
+        if pct > 100:
+            badge_class = "bg-red-500"
+            text_color = "#fff"
+        elif pct > 85:
+            badge_class = "bg-yellow-500"
+            text_color = "var(--text-primary)"
+        else:
+            badge_class = "bg-green-500"
+            text_color = "var(--text-primary)"
+        # Determine fill bar color
+        if pct > 100:
+            fill_color = "#ef4444"
+        elif pct > 85:
+            fill_color = "#f59e0b"
+        else:
+            fill_color = "#22c55e"
+
         kanban_cols.append({
             "month":          m,
-            "capacity_hours": row["capacity_hours"],
-            "backlog_hours":  row["backlog_hours"],
+            "capacity_hours": cap,
+            "backlog_hours":  bl,
+            "pct":            pct,
+            "badge_class":    badge_class,
+            "text_color":     text_color,
+            "fill_color":     fill_color,
             "working_days":   working_days,
             "days":           days,
             "orders":         col_orders,
@@ -434,6 +482,10 @@ def balancing_view():
         all_months=all_months,
         kanban_columns=kanban_cols,
         now_month=pd.Timestamp.today().strftime("%Y-%m"),
+        avg_before=avg_before,
+        avg_after=avg_after,
+        months_balanced=months_balanced,
+        total_months=len(eff_after),
     )
 
 @app.route("/balancing/move", methods=["POST"])

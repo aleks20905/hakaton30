@@ -295,10 +295,14 @@ def _backlog_with_effective_month(data: dict, overrides: dict) -> pd.DataFrame:
 
 
 def _auto_rebalance(bl: pd.DataFrame, capacity: pd.DataFrame,
-                    actuals: pd.DataFrame, target: float) -> dict:
+                     actuals: pd.DataFrame, target: float,
+                     forecast: pd.DataFrame = None, max_passes: int = 3) -> dict:
     """
-    Greedy: for each month (earliest first), pull backlog orders from later
-    months until month reaches target fill. Respects due_month hard cap.
+    Forecast-aware multi-pass balancing:
+    Phase 1: Pull orders forward to fill deficits (respecting due dates)
+    Phase 2: Push surplus orders to future months with capacity
+    Uses best-fit selection: picks orders whose size best matches the deficit.
+
     Returns overrides dict {order_number: new_month}.
     """
     if bl.empty or capacity.empty:
@@ -313,9 +317,28 @@ def _auto_rebalance(bl: pd.DataFrame, capacity: pd.DataFrame,
         act_agg = actuals.groupby("month_period")["hours_consumed"].sum()
         act_map = act_agg.to_dict()
 
+    # Build month → forecast hours map (for dynamic targets)
+    fc_map = {}
+    if forecast is not None and not forecast.empty and "required_labor_hours" in forecast.columns:
+        fc_agg = forecast.groupby("month_period")["required_labor_hours"].sum()
+        fc_map = fc_agg.to_dict()
+
     # Only consider future (or current) months — can't rebuild the past
     current = pd.Timestamp.today().strftime("%Y-%m")
     months_sorted = sorted(m for m in cap_map.keys() if m >= current)
+
+    # Compute dynamic target per month: blend flat target with forecast-aware target
+    # If forecast is high in a month, we can aim higher; if low, aim lower
+    def get_dynamic_target(month, cap):
+        base_target = target
+        if fc_map and month in fc_map:
+            fc_hrs = fc_map[month]
+            # Forecast-informed target: blend configured target with forecast ratio
+            fc_ratio = min(fc_hrs / cap, 1.0) if cap > 0 else 0
+            # Use weighted average: 60% configured target, 40% forecast-informed
+            dynamic = 0.6 * base_target + 0.4 * (0.7 + fc_ratio * 0.3)
+            return min(dynamic, 1.0)
+        return base_target
 
     all_months_seen = set(cap_map.keys()) | set(bl["due_month"].unique()) | set(bl["effective_month"].unique())
     load = {m: act_map.get(m, 0.0) for m in all_months_seen}
@@ -324,32 +347,100 @@ def _auto_rebalance(bl: pd.DataFrame, capacity: pd.DataFrame,
 
     overrides = {}
 
-    for M in months_sorted:
-        cap = cap_map.get(M, 0)
-        if cap <= 0:
-            continue
-        deficit = target * cap - load[M]
-        if deficit <= 0:
-            continue
+    for _pass in range(max_passes):
+        moved_this_pass = False
 
-        # Candidate orders: due in a LATER month, currently assigned to their due_month
-        candidates = bl[
-            (bl["due_month"] > M) &
-            (bl["effective_month"] == bl["due_month"]) &
-            (~bl["order_number"].isin(overrides.keys()))
-        ].sort_values(["due_month", "total_labor_hours"], ascending=[True, False])
+        # Phase 1: Fill deficits by pulling from later months
+        for M in months_sorted:
+            cap = cap_map.get(M, 0)
+            if cap <= 0:
+                continue
+            dyn_target = get_dynamic_target(M, cap)
+            deficit = dyn_target * cap - load[M]
+            if deficit <= 1:
+                continue
 
-        for _, row in candidates.iterrows():
-            hrs = row["total_labor_hours"]
-            if hrs <= deficit:
+            # Candidate orders: due in a LATER month, not yet moved
+            candidates = bl[
+                (bl["due_month"] > M) &
+                (bl["effective_month"] == bl["due_month"]) &
+                (~bl["order_number"].isin(overrides.keys()))
+            ].copy()
+
+            if candidates.empty:
+                continue
+
+            # Best-fit: sort by how close order size is to deficit (ascending diff)
+            candidates["size_diff"] = (candidates["total_labor_hours"] - deficit).abs()
+            candidates = candidates.sort_values(
+                ["size_diff", "due_month"], ascending=[True, True]
+            )
+
+            for _, row in candidates.iterrows():
+                hrs = row["total_labor_hours"]
+                if hrs > deficit:
+                    continue
                 order = row["order_number"]
                 due = row["due_month"]
                 overrides[order] = M
                 load[M] = load.get(M, 0.0) + hrs
                 load[due] = load.get(due, 0.0) - hrs
                 deficit -= hrs
-            if deficit <= 1:
-                break
+                moved_this_pass = True
+                if deficit <= 1:
+                    break
+
+        # Phase 2: Push surplus orders to future months with capacity
+        for M in reversed(months_sorted):  # Start from latest months
+            cap = cap_map.get(M, 0)
+            if cap <= 0:
+                continue
+            dyn_target = get_dynamic_target(M, cap)
+            surplus = load[M] - dyn_target * cap
+            if surplus <= 1:
+                continue
+
+            # Find future months with capacity
+            for future_m in months_sorted:
+                if future_m <= M:
+                    continue
+                future_cap = cap_map.get(future_m, 0)
+                future_dyn_target = get_dynamic_target(future_m, future_cap)
+                future_headroom = future_dyn_target * future_cap - load.get(future_m, 0.0)
+                if future_headroom <= 1:
+                    continue
+
+                # Find orders in M that could be moved to future_m (must respect due date)
+                pushable = bl[
+                    (bl["effective_month"] == M) &
+                    (bl["due_month"] >= future_m) &
+                    (~bl["order_number"].isin(overrides.keys()))
+                ].copy()
+
+                if pushable.empty:
+                    continue
+
+                # Best-fit: pick orders that fit in the future headroom
+                pushable["size_diff"] = (pushable["total_labor_hours"] - future_headroom).abs()
+                pushable = pushable.sort_values(["size_diff", "due_month"], ascending=[True, True])
+
+                for _, row in pushable.iterrows():
+                    hrs = row["total_labor_hours"]
+                    if hrs > future_headroom:
+                        continue
+                    order = row["order_number"]
+                    overrides[order] = future_m
+                    load[M] = load.get(M, 0.0) - hrs
+                    load[future_m] = load.get(future_m, 0.0) + hrs
+                    surplus -= hrs
+                    future_headroom -= hrs
+                    moved_this_pass = True
+                    if surplus <= 1:
+                        break
+
+        # Stop if no moves were made in this pass
+        if not moved_this_pass:
+            break
 
     return overrides
 
@@ -409,6 +500,17 @@ def rebalance_rollup(data: dict, start: str, end: str,
     for col in ["capacity_hours", "actual_hours", "backlog_hours", "backlog_hours_original"]:
         base[col] = base[col].fillna(0).round(1)
 
+    # Forecast hours for comparison
+    fc = data.get("forecast")
+    if fc is not None and not fc.empty and "required_labor_hours" in fc.columns:
+        fc_agg = fc.groupby("month_period", as_index=False)["required_labor_hours"].sum()
+        fc_agg = fc_agg.rename(columns={"required_labor_hours": "forecast_hours"})
+        base = base.merge(fc_agg, on="month_period", how="left")
+    else:
+        base["forecast_hours"] = 0.0
+
+    base["forecast_hours"] = base["forecast_hours"].fillna(0).round(1)
+
     base["total_load"] = (base["actual_hours"] + base["backlog_hours"]).round(1)
     base["total_load_original"] = (base["actual_hours"] + base["backlog_hours_original"]).round(1)
 
@@ -420,6 +522,11 @@ def rebalance_rollup(data: dict, start: str, end: str,
     base["efficiency_pct_original"] = np.where(
         base["capacity_hours"] > 0,
         (base["total_load_original"] / base["capacity_hours"] * 100).round(1),
+        0,
+    )
+    base["forecast_efficiency"] = np.where(
+        base["capacity_hours"] > 0,
+        (base["forecast_hours"] / base["capacity_hours"] * 100).round(1),
         0,
     )
 
