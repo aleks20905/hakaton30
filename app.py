@@ -402,8 +402,6 @@ def balancing_view():
     rollup = rebalance_rollup(filtered, start, end, overrides)
     orders = movable_orders(filtered, overrides)
 
-    current = pd.Timestamp.today().strftime("%Y-%m")
-    all_months = get_month_range(current, rollup["month_period"].max())
     options = get_filter_options(data)
 
     # Summary stats for KPI cards
@@ -413,7 +411,7 @@ def balancing_view():
     avg_after = round(sum(eff_after) / len(eff_after), 1) if eff_after else 0
     months_balanced = sum(1 for e in eff_after if BALANCE_MIN_EFFICIENCY <= e <= 100)
 
-    orders_list = orders.to_dict("records") if not orders.empty else []
+
     kanban_cols = build_kanban_columns(rollup, orders)
 
     return render_template(
@@ -434,13 +432,8 @@ def balancing_view():
         backlog_hours_original=rollup["backlog_hours_original"].tolist(),
         efficiency_pct=rollup["efficiency_pct"].tolist(),
         efficiency_pct_original=rollup["efficiency_pct_original"].tolist(),                  # keep original for forms
-        orders=orders_list,
-        all_months=all_months,
         kanban_columns=kanban_cols,
         now_month=pd.Timestamp.today().strftime("%Y-%m"),
-        avg_before=avg_before,
-        avg_after=avg_after,
-        months_balanced=months_balanced,
         total_months=len(eff_after),
     )
 
