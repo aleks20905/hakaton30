@@ -100,10 +100,10 @@ new Chart(document.getElementById('mainChart'), {
     data: {
         labels,
         datasets: [
-            { label:'Capacity', data:{{ capacity_hours|tojson }}, backgroundColor:'#95a5a6' },
-            { label:'Actual',   data:{{ actual_hours|tojson }},   backgroundColor:'#27ae60' },
-            { label:'Backlog',  data:{{ backlog_hours|tojson }},  backgroundColor:'#e74c3c' },
-            { label:'Forecast', data:{{ forecast_hours|tojson }}, backgroundColor:'#3498db' },
+            { label:'Actual',   data:{{ actual_hours|tojson }},   backgroundColor:'#27ae60', borderRadius:4 },
+            { label:'Backlog',  data:{{ backlog_hours|tojson }},  backgroundColor:'#e74c3c', borderRadius:4 },
+            { label:'Capacity', data:{{ capacity_hours|tojson }}, backgroundColor:'#95a5a6', borderRadius:4 },
+            { label:'Forecast', data:{{ forecast_hours|tojson }}, backgroundColor:'#3498db', borderRadius:4 },
         ]
     },
     options: {

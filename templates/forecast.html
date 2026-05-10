@@ -67,10 +67,6 @@
         <span class="chart-badge">Monthly view</span>
     </div>
     <canvas id="forecastChart" style="max-height:400px;"></canvas>
-    <div style="padding:0.75rem 1rem;font-size:0.75rem;color:var(--text-muted);border-top:1px solid var(--border);">
-        <i class="bi bi-info-circle" style="margin-right:0.4rem;"></i>
-        Blue = forecast hours. Gray = capacity line. Orange = efficiency % (right axis). Click legend to toggle.
-    </div>
 </div>
 
 <!-- TABLE -->
@@ -148,7 +144,6 @@ new Chart(document.getElementById('forecastChart'), {
                 pointBackgroundColor:'#94a3b8',
                 borderWidth:2,
                 order:0,
-                yAxisID:'y'
             },
             {
                 label:'Forecast',
@@ -162,8 +157,7 @@ new Chart(document.getElementById('forecastChart'), {
                 data:{{ forecast_eff|tojson }},
                 type:'line',
                 borderColor:'#f59e0b',
-                backgroundColor:'rgba(245,158,11,0.1)',
-                fill:false,
+                backgroundColor:'#f59e0b',
                 yAxisID:'y1',
                 tension:0.3,
                 pointRadius:3,

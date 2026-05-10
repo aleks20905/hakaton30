@@ -2,8 +2,19 @@
 Pure data-processing helpers. No Flask, no I/O.
 All functions take a `data` dict: {capacity, backlog, forecast, actuals, items}
 """
+import calendar
+import datetime as dt
 import pandas as pd
 import numpy as np
+
+# ── Configuration Constants ───────────────────────────────────────────────────
+DEFAULT_TARGET_PCT = 90          # Default load-balancing target (% of capacity)
+BALANCE_OVER_THRESHOLD = 100     # Overload badge threshold (%)
+BALANCE_WARNING_THRESHOLD = 85   # Warning badge threshold (%)
+BALANCE_MIN_EFFICIENCY = 70      # Minimum efficiency for "balanced" count
+AUTO_REBALANCE_MAX_PASSES = 3    # Max auto-rebalance iterations
+DYNAMIC_TARGET_WEIGHT = 0.6      # Weight for configured target in dynamic calculation
+DYNAMIC_FC_BONUS = 0.4           # Weight for forecast-informed bonus in dynamic target
 
 
 def get_month_range(start: str, end: str) -> list:
@@ -276,27 +287,21 @@ def _backlog_with_effective_month(data: dict, overrides: dict) -> pd.DataFrame:
     if bl.empty or "order_number" not in bl.columns:
         return bl
 
-    bl["due_month"] = bl["month_period"]  # original due month
+    bl["due_month"] = bl["month_period"]
     bl["effective_month"] = bl["due_month"]
 
     if overrides:
-        # Apply override only if <= due_month
-        for order, target_month in overrides.items():
-            mask = bl["order_number"].astype(str) == str(order)
-            if not mask.any():
-                continue
-            # Check each matching row — an order_number can appear multiple times
-            for idx in bl[mask].index:
-                due = bl.at[idx, "due_month"]
-                if target_month <= due:  # string compare works for YYYY-MM
-                    bl.at[idx, "effective_month"] = target_month
+        bl["order_number"] = bl["order_number"].astype(str)
+        override_months = bl["order_number"].map(overrides)
+        valid_mask = bl["order_number"].isin(overrides) & (override_months <= bl["due_month"])
+        bl["effective_month"] = bl["effective_month"].where(~valid_mask, override_months)
 
     return bl
 
 
 def _auto_rebalance(bl: pd.DataFrame, capacity: pd.DataFrame,
-                     actuals: pd.DataFrame, target: float,
-                     forecast: pd.DataFrame = None, max_passes: int = 3) -> dict:
+                      actuals: pd.DataFrame, target: float,
+                      forecast: pd.DataFrame = None, max_passes: int = AUTO_REBALANCE_MAX_PASSES) -> dict:
     """
     Forecast-aware multi-pass balancing:
     Phase 1: Pull orders forward to fill deficits (respecting due dates)
@@ -308,8 +313,12 @@ def _auto_rebalance(bl: pd.DataFrame, capacity: pd.DataFrame,
     if bl.empty or capacity.empty:
         return {}
 
-    # Build month → capacity map
-    cap_map = dict(zip(capacity["month_period"], capacity["available_gross_hours"]))
+    # Build month → capacity map (deduplicate by summing hours for duplicate months)
+    if "month_period" in capacity.columns and "available_gross_hours" in capacity.columns:
+        cap_agg = capacity.groupby("month_period", as_index=False)["available_gross_hours"].sum()
+        cap_map = dict(zip(cap_agg["month_period"], cap_agg["available_gross_hours"]))
+    else:
+        cap_map = {}
 
     # Build month → actual hours map
     act_map = {}
@@ -333,10 +342,8 @@ def _auto_rebalance(bl: pd.DataFrame, capacity: pd.DataFrame,
         base_target = target
         if fc_map and month in fc_map:
             fc_hrs = fc_map[month]
-            # Forecast-informed target: blend configured target with forecast ratio
             fc_ratio = min(fc_hrs / cap, 1.0) if cap > 0 else 0
-            # Use weighted average: 60% configured target, 40% forecast-informed
-            dynamic = 0.6 * base_target + 0.4 * (0.7 + fc_ratio * 0.3)
+            dynamic = DYNAMIC_TARGET_WEIGHT * base_target + DYNAMIC_FC_BONUS * (0.7 + fc_ratio * 0.3)
             return min(dynamic, 1.0)
         return base_target
 
@@ -550,10 +557,83 @@ def movable_orders(data: dict, overrides: dict) -> pd.DataFrame:
 
     # Flag whether it's been moved
     bl["is_moved"] = bl["effective_month"] != bl["due_month"]
-    bl["months_pulled"] = bl.apply(
-        lambda r: (pd.Period(r["due_month"]) - pd.Period(r["effective_month"])).n
-        if r["is_moved"] else 0,
-        axis=1
-    )
+    due_periods = pd.PeriodIndex(bl["due_month"], freq="M")
+    eff_periods = pd.PeriodIndex(bl["effective_month"], freq="M")
+    due_periods = pd.PeriodIndex(bl["due_month"], freq="M")
+    eff_periods = pd.PeriodIndex(bl["effective_month"], freq="M")
+    months_diff = due_periods.asi8 - eff_periods.asi8
+    bl["months_pulled"] = np.where(bl["is_moved"], months_diff, 0).astype(int)
 
     return bl
+
+
+def build_kanban_columns(rollup: pd.DataFrame, orders: pd.DataFrame) -> list:
+    """
+    Build kanban column data for the balancing view.
+    Each column represents a month with capacity bars, working days,
+    color-coded load percentage, and assigned orders.
+    """
+    from collections import defaultdict
+
+    orders_list = orders.to_dict("records") if not orders.empty else []
+
+    # Pre-group orders by effective_month: O(n) instead of O(n*m)
+    orders_by_month = defaultdict(list)
+    for o in orders_list:
+        m = o.get("effective_month")
+        if m:
+            orders_by_month[m].append(o)
+
+    kanban_cols = []
+    for _, row in rollup.iterrows():
+        m = row["month_period"]
+        year, mon = int(m[:4]), int(m[5:7])
+
+        cal_weeks = calendar.monthcalendar(year, mon)
+        working_days = sum(1 for week in cal_weeks for d in week[:5] if d != 0)
+        daily_cap = round(row["capacity_hours"] / working_days, 1) if working_days else 0
+
+        days = []
+        num_days = calendar.monthrange(year, mon)[1]
+        for d in range(1, num_days + 1):
+            day_dt = dt.date(year, mon, d)
+            if day_dt.weekday() < 5:
+                days.append({
+                    "date": day_dt.strftime("%Y-%m-%d"),
+                    "label": day_dt.strftime("%a %-d"),
+                    "daily_capacity": daily_cap,
+                })
+
+        col_orders = orders_by_month.get(m, [])
+        col_orders.sort(
+            key=lambda o: (
+                not o.get("is_moved", False),              # moved cards first
+                -float(o.get("total_labor_hours") or 0),   # then longest first
+            )
+        )
+
+        cap = row["capacity_hours"]
+        bl_hrs = row["backlog_hours"]
+        pct = round((bl_hrs / cap * 100) if cap else 0, 1)
+
+        if pct > BALANCE_OVER_THRESHOLD:
+            badge_class, fill_color, text_color = "bg-red-500", "#ef4444", "#fff"
+        elif pct > BALANCE_WARNING_THRESHOLD:
+            badge_class, fill_color, text_color = "bg-yellow-500", "#f59e0b", "var(--text-primary)"
+        else:
+            badge_class, fill_color, text_color = "bg-green-500", "#22c55e", "var(--text-primary)"
+
+        kanban_cols.append({
+            "month": m,
+            "capacity_hours": cap,
+            "backlog_hours": bl_hrs,
+            "pct": pct,
+            "badge_class": badge_class,
+            "text_color": text_color,
+            "fill_color": fill_color,
+            "working_days": working_days,
+            "days": days,
+            "orders": col_orders,
+        })
+
+    return kanban_cols

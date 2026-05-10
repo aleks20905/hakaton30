@@ -40,7 +40,7 @@
     </div>
 
     <div class="kpi-card">
-        <div class="kpi-header"><span class="kpi-label">Forecast Variance</span></div>
+        <div class="kpi-header"><span class="kpi-label">Forecast Variance (actual vs forecast done)</span></div>
         <div class="kpi-value">{{ kpis.forecast_variance_pct }}%</div>
         <div class="kpi-footer">
             <span class="kpi-tag {{ 'positive' if kpis.forecast_variance_pct >= 0 else 'negative' }}">
@@ -127,10 +127,10 @@ new Chart(document.getElementById('capacityChart'), {
     data: {
         labels: months,
         datasets: [
-            { label: 'Capacity', data: {{ capacity_hours | tojson }}, backgroundColor: '#95a5a6', order: 3 },
-            { label: 'Actual',   data: {{ actual_hours   | tojson }}, backgroundColor: '#27ae60', order: 2 },
-            { label: 'Backlog',  data: {{ backlog_hours  | tojson }}, backgroundColor: '#e74c3c', order: 2 },
-            { label: 'Forecast', data: {{ forecast_hours | tojson }}, backgroundColor: '#3498db', order: 2 },
+            { label: 'Actual',   data: {{ actual_hours | tojson }},   backgroundColor: '#27ae60', borderRadius:2 },
+            { label: 'Backlog',  data: {{ backlog_hours | tojson }},  backgroundColor: '#e74c3c', borderRadius:2 },
+            { label: 'Capacity', data: {{ capacity_hours | tojson }}, backgroundColor: '#95a5a6', borderRadius:2 },
+            { label: 'Forecast', data: {{ forecast_hours | tojson }}, backgroundColor: '#3498db', borderRadius:2 },
             {
                 label: 'Op Efficiency %',
                 data: {{ op_eff | tojson }},
@@ -139,7 +139,7 @@ new Chart(document.getElementById('capacityChart'), {
                 backgroundColor: '#f59e0b',
                 yAxisID: 'y1',
                 tension: 0.3,
-                order: 1,
+                order: -1,
             }
         ]
     },

@@ -60,7 +60,7 @@ new Chart(document.getElementById('backlogChart'), {
     data: {
         labels: {{ months|tojson }},
         datasets: [
-            { label:'Backlog Hours', data:{{ backlog_hours|tojson }}, backgroundColor:'#e74c3c', yAxisID:'y' },
+            { label:'Backlog Hours', data:{{ backlog_hours|tojson }}, backgroundColor:'#e74c3c', borderRadius:4, yAxisID:'y', order:1 },
             { label:'Order Count',   data:{{ order_counts|tojson }},  backgroundColor:'#f59e0b', yAxisID:'y1', type:'line', borderColor:'#f59e0b', tension:0.3 }
         ]
     },

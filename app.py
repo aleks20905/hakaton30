@@ -16,14 +16,25 @@ from analytics_helpers import (
     apply_family_filter,
     rebalance_rollup,
     movable_orders,
+    build_kanban_columns,
     _parse_overrides,
     _encode_overrides,
     _auto_rebalance,
     _backlog_with_effective_month,
+    DEFAULT_TARGET_PCT,
+    BALANCE_MIN_EFFICIENCY,
 )
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "dev-only-change-me")
+_secret_key = os.environ.get("SECRET_KEY")
+if _secret_key:
+    app.secret_key = _secret_key
+elif os.environ.get("FLASK_DEBUG", "false").lower() == "true":
+    app.secret_key = os.urandom(32)
+else:
+    raise RuntimeError(
+        "No SECRET_KEY set for production. Set the SECRET_KEY env var before running."
+    )
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.environ.get("DATA_DIR", os.path.join(BASE_DIR, "data"))
@@ -76,11 +87,19 @@ def _load_cached(mtime: float):
     }
 
 
+REQUIRED_SHEETS = {"Capacity_Calendar", "Demand_Backlog", "Production_Forecast", "Production_Actuals"}
+
 def load_data():
     if not os.path.exists(DATA_PATH):
         return None
     try:
-        return _load_cached(os.path.getmtime(DATA_PATH))
+        data = _load_cached(os.path.getmtime(DATA_PATH))
+        sheets = set(pd.read_excel(DATA_PATH, sheet_name=None).keys())
+        missing = REQUIRED_SHEETS - sheets
+        if missing:
+            flash(f"Warning: missing Excel sheets — {', '.join(sorted(missing))}. Some views may be incomplete.", "warning")
+            app.logger.warning("Missing sheets in data file: %s", ", ".join(missing))
+        return data
     except Exception as e:
         app.logger.error(f"Failed to load data: {e}")
         return None
@@ -366,7 +385,7 @@ def balancing_view():
     filtered = apply_family_filter(data, params["family"])
 
     mode = request.args.get("mode", "manual")
-    target = float(request.args.get("target", 90)) / 100.0
+    target = float(request.args.get("target", DEFAULT_TARGET_PCT)) / 100.0
     moves_str = request.args.get("moves", "")
     overrides = _parse_overrides(moves_str)
 
@@ -392,74 +411,11 @@ def balancing_view():
     eff_after = rollup["efficiency_pct"].tolist()
     avg_before = round(sum(eff_before) / len(eff_before), 1) if eff_before else 0
     avg_after = round(sum(eff_after) / len(eff_after), 1) if eff_after else 0
-    months_balanced = sum(1 for e in eff_after if 70 <= e <= 100)
+    months_balanced = sum(1 for e in eff_after if BALANCE_MIN_EFFICIENCY <= e <= 100)
 
-    # ── BUILD KANBAN COLUMNS ───────────────────────────────────────────────
-    import calendar
-    import datetime as dt
-
-    # if not orders.empty:
-    #     print("ORDER COLUMNS:", orders.columns.tolist())
     orders_list = orders.to_dict("records") if not orders.empty else []
+    kanban_cols = build_kanban_columns(rollup, orders)
 
-    kanban_cols = []
-    for _, row in rollup.iterrows():
-        m = row["month_period"]          # "YYYY-MM"
-        year, mon = int(m[:4]), int(m[5:7])
-
-        cal_weeks  = calendar.monthcalendar(year, mon)
-        working_days = sum(1 for week in cal_weeks for d in week[:5] if d != 0)
-        daily_cap  = round(row["capacity_hours"] / working_days, 1) if working_days else 0
-
-        days = []
-        num_days = calendar.monthrange(year, mon)[1]
-        for d in range(1, num_days + 1):
-            day_dt = dt.date(year, mon, d)
-            if day_dt.weekday() < 5:          # Mon–Fri only
-                days.append({
-                    "date":          day_dt.strftime("%Y-%m-%d"),
-                    "label":         day_dt.strftime("%a %-d"),   # "Mon 3"
-                    "daily_capacity": daily_cap,
-                })
-
-        col_orders = [o for o in orders_list if o["effective_month"] == m]
-
-        # Pre-compute values for the template to avoid Jinja2 inline issues
-        cap = row["capacity_hours"]
-        bl = row["backlog_hours"]
-        pct = min(round((bl / cap * 100) if cap else 0, 1), 100)
-        # Determine badge color class and text color
-        if pct > 100:
-            badge_class = "bg-red-500"
-            text_color = "#fff"
-        elif pct > 85:
-            badge_class = "bg-yellow-500"
-            text_color = "var(--text-primary)"
-        else:
-            badge_class = "bg-green-500"
-            text_color = "var(--text-primary)"
-        # Determine fill bar color
-        if pct > 100:
-            fill_color = "#ef4444"
-        elif pct > 85:
-            fill_color = "#f59e0b"
-        else:
-            fill_color = "#22c55e"
-
-        kanban_cols.append({
-            "month":          m,
-            "capacity_hours": cap,
-            "backlog_hours":  bl,
-            "pct":            pct,
-            "badge_class":    badge_class,
-            "text_color":     text_color,
-            "fill_color":     fill_color,
-            "working_days":   working_days,
-            "days":           days,
-            "orders":         col_orders,
-        })
-    # ── END KANBAN BUILD ───────────────────────────────────────────────────
-    
     return render_template(
         "balancing.html",
         page="balancing",
@@ -514,8 +470,11 @@ def balancing_move():
 
     # Parse query string from the page that submitted the form
     referer = request.headers.get("Referer", "")
-    parsed  = urlparse(referer)
-    qs = {k: v[0] for k, v in parse_qs(parsed.query).items()}
+    if referer:
+        parsed  = urlparse(referer)
+        qs = {k: v[0] for k, v in parse_qs(parsed.query).items()}
+    else:
+        qs = {}
 
     # Only overwrite moves
     qs["moves"] = _encode_overrides(overrides)
@@ -528,14 +487,23 @@ def balancing_move():
 @app.route("/upload", methods=["POST"])
 def upload():
     if "file" not in request.files:
-        return redirect(request.referrer or url_for("index"))
+        flash("No file provided.", "error")
+        return redirect(url_for("index"))
     file = request.files["file"]
-    if not file.filename.lower().endswith(".xlsx"):
-        return redirect(request.referrer or url_for("index"))
+    if not file.filename or not file.filename.lower().endswith(".xlsx"):
+        flash("Invalid file. Only .xlsx files are accepted.", "error")
+        return redirect(url_for("index"))
 
-    file.save(DATA_PATH)
-    _load_cached.cache_clear()  # Invalidate cache
-    return redirect(request.referrer or url_for("index"))
+    try:
+        file.save(DATA_PATH)
+        # Validate the file can actually be read
+        pd.read_excel(DATA_PATH, sheet_name=None)
+        _load_cached.cache_clear()
+        flash("File uploaded successfully.", "success")
+    except Exception:
+        _load_cached.cache_clear()
+        flash("Failed to read uploaded file. Is it a valid Excel file?", "error")
+    return redirect(url_for("index"))
 
 
 @app.route("/download")
@@ -548,7 +516,7 @@ def download():
 @app.route("/refresh")
 def refresh():
     _load_cached.cache_clear()
-    return redirect(request.referrer or url_for("index"))
+    return redirect(url_for("index"))
 
 
 if __name__ == "__main__":
